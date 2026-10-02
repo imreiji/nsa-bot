@@ -81,7 +81,7 @@ def test_judge_records_usage():
     async def fake_create(**kwargs):
         return SimpleNamespace(
             usage=SimpleNamespace(total_tokens=600),
-            choices=[SimpleNamespace(message=SimpleNamespace(content='{"flagged": [{"i": 0, "severity": 6}]}'))],
+            choices=[SimpleNamespace(finish_reason="stop", message=SimpleNamespace(content='{"flagged": [{"i": 0, "severity": 6}]}'))],
         )
 
     judge.client.chat.completions.create = fake_create
@@ -100,3 +100,40 @@ def test_possessive_copypasta_is_exact():
         "poorly socialized people with their masturbatory fantasies about seiyuu that are just acting, not actually "
         "interested.\nCreepy and possessive."
     )
+
+
+def _capturing_judge(**kw):
+    import asyncio
+    from types import SimpleNamespace
+
+    from nsabot.judge import Judge
+
+    judge = Judge("key", "deepseek-flash", "http://localhost", DB(":memory:"), **kw)
+    sent = []
+
+    async def fake_create(**kwargs):
+        sent.append(kwargs)
+        return SimpleNamespace(usage=None, choices=[SimpleNamespace(
+            finish_reason="stop", message=SimpleNamespace(content='{"flagged": []}'))])
+
+    judge.client.chat.completions.create = fake_create
+    asyncio.run(judge.judge({"messages": []}, 0))
+    return sent[0]
+
+
+def test_thinking_mode_request():
+    req = _capturing_judge(thinking=True, effort="max")
+    assert req["model"] == "deepseek-flash"
+    assert req["extra_body"] == {"thinking": {"type": "enabled"}, "reasoning_effort": "max"}
+    assert "temperature" not in req and req["max_tokens"] > 2000
+
+
+def test_non_thinking_mode_request():
+    req = _capturing_judge(thinking=False)
+    assert req["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert req["temperature"] == 0.2 and req["max_tokens"] == 2000
+
+
+def test_parse_verdicts_tolerates_fences():
+    raw = 'Here you go:\n```json\n{"flagged": [{"i": 0, "severity": 4, "reason": "unicorn"}]}\n```'
+    assert parse_verdicts(raw, 1) == {0: (4, "unicorn")}

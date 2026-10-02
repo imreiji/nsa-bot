@@ -18,7 +18,7 @@ def api_calls():
 
     async def fake_create(**kwargs):
         calls.append(kwargs)
-        return NS(usage=NS(total_tokens=1), choices=[NS(message=NS(content='{"flagged": []}'))])
+        return NS(usage=NS(total_tokens=1), choices=[NS(finish_reason="stop", message=NS(content='{"flagged": []}'))])
 
     b.judge.client.chat.completions.create = fake_create
     b.watching.clear()

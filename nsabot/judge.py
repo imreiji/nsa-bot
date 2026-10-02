@@ -14,6 +14,7 @@ MAX_CHARS = 800          # per scored message sent to the model
 CONTEXT_CHARS = 300      # per context-only message
 REPLY_CHARS = 200        # per quoted reply target
 EXTRAS_CHARS = 300       # attachments / embeds description
+THINKING_TOKENS = 16000  # extra output room for reasoning when thinking mode is on
 
 JUDGE_PROMPT = """You are the NSA (Neckbeard Surveillance Agency), an analyst auditing a Discord server for
 "kimoi" (キモい) posts: cringe, creepy or deeply unhinged otaku behaviour.
@@ -84,16 +85,31 @@ race, gender, or anything other than what they posted. Plain text, no markdown h
 
 
 class Judge:
-    def __init__(self, api_key: str, model: str, base_url: str, db: DB):
+    def __init__(
+        self, api_key: str, model: str, base_url: str, db: DB, thinking: bool = True, effort: str | None = None
+    ):
         # Bounded retries/timeouts so a flaky API can't stall a sweep or multiply spend.
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=2, timeout=120)
+        # Thinking at high effort can take a few minutes on a full batch.
+        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=2, timeout=300 if thinking else 120)
         self.model = model
         self.db = db
+        self.thinking = thinking
+        self.effort = effort
 
-    async def _complete(self, **kwargs):
-        resp = await self.client.chat.completions.create(model=self.model, **kwargs)
+    async def _complete(self, *, max_tokens: int, temperature: float, **kwargs):
+        """max_tokens is the answer budget; thinking gets extra room on top since it may count against it."""
+        extra = {"thinking": {"type": "enabled" if self.thinking else "disabled"}}
+        if self.thinking:
+            if self.effort:
+                extra["reasoning_effort"] = self.effort
+            kwargs["max_tokens"] = max_tokens + THINKING_TOKENS  # temperature is ignored in thinking mode
+        else:
+            kwargs.update(max_tokens=max_tokens, temperature=temperature)
+        resp = await self.client.chat.completions.create(model=self.model, extra_body=extra, **kwargs)
         if resp.usage:
             self.db.add_tokens(resp.usage.total_tokens)  # informational, shown by !usage
+        if resp.choices and resp.choices[0].finish_reason == "length":
+            log.warning("DeepSeek hit max_tokens; the answer may be cut off")
         return resp
 
     async def judge(self, payload: dict, n: int) -> dict[int, tuple[int, str]]:
@@ -166,8 +182,15 @@ def parse_verdicts(raw: str, n: int) -> dict[int, tuple[int, str]]:
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
-        log.warning("judge returned invalid JSON: %.200s", raw)
-        raise
+        # Tolerate prose or ```json fences around the object.
+        start, end = raw.find("{"), raw.rfind("}")
+        try:
+            data = json.loads(raw[start : end + 1]) if 0 <= start < end else None
+        except json.JSONDecodeError:
+            data = None
+        if data is None:
+            log.warning("judge returned invalid JSON: %.200s", raw)
+            raise
     out: dict[int, tuple[int, str]] = {}
     for v in data.get("flagged", []) if isinstance(data, dict) else []:
         try:

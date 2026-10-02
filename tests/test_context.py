@@ -88,7 +88,7 @@ def test_judge_backlog_batches_per_channel_with_context():
         calls.append(payload)
         scored = [m for m in payload["messages"] if "i" in m]
         flagged = [{"i": m["i"], "severity": 7, "reason": "yes"} for m in scored if "waifu" in m["text"]]
-        return NS(usage=NS(total_tokens=1), choices=[NS(message=NS(content=json.dumps({"flagged": flagged})))])
+        return NS(usage=NS(total_tokens=1), choices=[NS(finish_reason="stop", message=NS(content=json.dumps({"flagged": flagged})))])
 
     b.judge.client.chat.completions.create = fake_create
     b.db.conn.execute("DELETE FROM messages")

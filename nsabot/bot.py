@@ -46,8 +46,10 @@ PREFIX = os.getenv("NSA_PREFIX", "!")
 db = DB(os.getenv("NSA_DB_PATH", "nsa.db"))
 judge = Judge(
     api_key=os.environ["DEEPSEEK_API_KEY"],
-    model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
+    model=os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
     base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+    thinking=os.getenv("DEEPSEEK_THINKING", "on").lower() not in ("off", "0", "false", "disabled"),
+    effort=os.getenv("DEEPSEEK_REASONING_EFFORT") or None,
     db=db,
 )
 
