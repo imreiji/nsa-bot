@@ -268,8 +268,8 @@ async def run_scan(ctx: commands.Context, channels: list[discord.abc.Messageable
         if ctx.guild.id not in watching:
             notes.append(f"No report channel set (`{PREFIX}watch #channel`), so nothing was posted.")
         await status.edit(
-            content=f"✅ Sweep complete: {scraped} new posts intercepted, {judged} analysed, {flagged} kimoi, "
-            f"{posted} reported. " + " ".join(notes)
+            content=f"✅ Sweep complete: {scraped} new posts intercepted, {judged} analysed, {flagged} kimoi "
+            f"(all go on the leaderboard), {posted} at ≥{REPORT_MIN_SEVERITY}/10 posted to the report channel. " + " ".join(notes)
         )
 
 
