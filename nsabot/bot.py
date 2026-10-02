@@ -5,6 +5,7 @@ import itertools
 import logging
 import os
 import re
+import time
 from collections import defaultdict
 
 import discord
@@ -178,18 +179,42 @@ def channel_info(guild: discord.Guild, channel_id: int) -> dict:
 
 # --- pipeline: scrape -> judge -> report ------------------------------------
 
-async def scrape(channel: discord.TextChannel, opted_out: set[int]) -> int:
+class Progress:
+    """Edits a status message at most every `every` seconds (Discord rate-limits edits) and logs it."""
+
+    def __init__(self, message: discord.Message | None = None, every: float = 10.0):
+        self.message = message
+        self.every = every
+        self.last = 0.0
+
+    async def __call__(self, text: str, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and now - self.last < self.every:
+            return
+        self.last = now
+        log.info("progress: %s", text)
+        if self.message:
+            try:
+                await self.message.edit(content=text)
+            except discord.HTTPException:
+                pass  # status message deleted or uneditable; the scan carries on
+
+
+
+async def scrape(channel: discord.TextChannel, opted_out: set[int], progress: Progress | None = None) -> int:
     """Pull messages newer than the channel's cursor (oldest first), up to SCAN_LIMIT.
 
     Returns how many were queued for scoring (context-only messages are stored but not counted).
     """
     cursor = db.get_cursor(channel.id)
     after = discord.Object(cursor) if cursor else None
+    log.info("reading #%s from %s, up to %d messages", channel.name, "the start" if cursor is None else cursor, SCAN_LIMIT)
     pending: list[Message] = []
     last_id = cursor or 0
-    to_score = 0
+    read = to_score = 0
     async for m in channel.history(limit=SCAN_LIMIT, after=after, oldest_first=True):
         last_id = m.id
+        read += 1
         scored = classify(m, opted_out)
         if scored is not None:
             pending.append(to_row(m, scored, opted_out))
@@ -197,8 +222,11 @@ async def scrape(channel: discord.TextChannel, opted_out: set[int]) -> int:
         if len(pending) >= SAVE_EVERY:
             db.save_batch(channel.id, last_id, pending)
             pending = []
+        if progress and read % 100 == 0:
+            await progress(f"📡 Reading #{channel.name}: {read:,} messages so far ({to_score:,} to analyse)…")
     if last_id:
         db.save_batch(channel.id, last_id, pending)
+    log.info("read #%s: %d messages, %d queued for scoring", channel.name, read, to_score)
     return to_score
 
 
@@ -211,11 +239,14 @@ async def judge_backlog(guild: discord.Guild, progress=None) -> tuple[int, int]:
         timeline = db.timeline(channel_id, ids[0], ids[-1], before=CONTEXT_MESSAGES)
         payload, order = build_payload(channel_info(guild, channel_id), timeline, ids)
         async with sem:
+            started = time.monotonic()
             try:
                 result = await judge.judge(payload, len(order))
             except Exception:
                 log.exception("judge batch failed; leaving %d messages queued", len(order))
                 return 0, 0
+        log.info("judged %d posts in %s: %d flagged (%.0fs)",
+                 len(order), payload["channel"]["name"], len(result), time.monotonic() - started)
         db.save_verdicts([(mid, *result.get(i, (0, None))) for i, mid in enumerate(order)])
         return len(order), len(result)
 
@@ -232,7 +263,8 @@ async def judge_backlog(guild: discord.Guild, progress=None) -> tuple[int, int]:
         judged += round_judged
         flagged += sum(f for _, f in results)
         if progress:
-            await progress(f"🕵️ Analysed {judged} posts, {flagged} flagged as kimoi…")
+            left = db.count_unjudged(guild.id)
+            await progress(f"🕵️ Analysed {judged:,} posts, {flagged:,} flagged as kimoi, {left:,} to go…", force=True)
         if round_judged == 0:  # every batch failed; don't spin on a dead API
             break
     return judged, flagged
@@ -317,21 +349,24 @@ async def run_scan(ctx: commands.Context, channels: list[discord.abc.Messageable
         return
     async with lock:
         status = await ctx.send(f"📡 Intercepting {len(channels)} channel(s)…")
+        progress = Progress(status)
         opted_out = db.opted_out(ctx.guild.id)
         scraped = 0
         for ch in channels:
             try:
-                scraped += await scrape(ch, opted_out)
+                scraped += await scrape(ch, opted_out, progress)
             except discord.Forbidden:
+                log.warning("no permission to read #%s", ch.name)
                 await ctx.send(f"No clearance for {ch.mention}, skipping.")
-        await status.edit(content=f"📡 Intercepted {scraped} new posts. Handing them to the analyst…")
-        judged, flagged, posted = await process(ctx.guild, lambda text: status.edit(content=text))
+        await progress(f"📡 Intercepted {scraped:,} new posts. Handing them to the analyst…", force=True)
+        judged, flagged, posted = await process(ctx.guild, progress)
         left = db.count_unjudged(ctx.guild.id)
         notes = []
         if left:
             notes.append(f"{left} posts failed (API errors), rerun to retry.")
         if ctx.guild.id not in watching:
             notes.append(f"No report channel set (`{PREFIX}watch #channel`), so nothing was posted.")
+        log.info("sweep complete: %d queued, %d judged, %d flagged, %d posted, %d left", scraped, judged, flagged, posted, left)
         await status.edit(
             content=f"✅ Sweep complete: {scraped} new posts intercepted, {judged} analysed, {flagged} kimoi "
             f"(all go on the leaderboard), {posted} at ≥{REPORT_MIN_SEVERITY}/10 posted to the report channel. " + " ".join(notes)
@@ -479,11 +514,17 @@ async def optin(ctx: commands.Context):
 
 # --- lifecycle --------------------------------------------------------------
 
+@bot.listen("on_command")
+async def log_command(ctx: commands.Context):
+    log.info("%s (%s) ran %r in #%s", ctx.author, ctx.author.id, ctx.message.content[:100], getattr(ctx.channel, "name", "DM"))
+
+
 @bot.event
 async def on_command_error(ctx: commands.Context, error: commands.CommandError):
     if isinstance(error, commands.CommandNotFound):
         return
     if isinstance(error, commands.CheckFailure):
+        log.info("refused %r from %s (%s): %s", ctx.message.content[:50], ctx.author, ctx.author.id, error)
         if ctx.guild and ctx.guild.id in GUILD_IDS:  # stay silent in unlisted servers and DMs
             await ctx.send(str(error))
     elif isinstance(error, commands.CommandOnCooldown):

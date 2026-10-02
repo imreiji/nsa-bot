@@ -137,3 +137,23 @@ def test_non_thinking_mode_request():
 def test_parse_verdicts_tolerates_fences():
     raw = 'Here you go:\n```json\n{"flagged": [{"i": 0, "severity": 4, "reason": "unicorn"}]}\n```'
     assert parse_verdicts(raw, 1) == {0: (4, "unicorn")}
+
+
+def test_progress_throttles_edits():
+    import asyncio
+
+    from nsabot.bot import Progress
+
+    edits = []
+
+    class Status:
+        async def edit(self, content):
+            edits.append(content)
+
+    async def run():
+        p = Progress(Status(), every=60)
+        await p("a")
+        await p("b")              # throttled
+        await p("c", force=True)  # forced through
+    asyncio.run(run())
+    assert edits == ["a", "c"]
