@@ -1,12 +1,20 @@
 services:
   nsa-bot:
     build: .
+    container_name: nsa-bot
     env_file: .env
     environment:
       NSA_DB_PATH: /data/nsa.db
     volumes:
       - nsa-data:/data
     restart: unless-stopped
+    # Shares the box with other services: cap memory and keep logs from filling the disk.
+    mem_limit: 300m
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   nsa-data:
