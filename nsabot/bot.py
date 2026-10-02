@@ -21,7 +21,11 @@ REPORT_MAX_PER_RUN = 20  # report-channel posts per sweep; the rest are summaris
 
 
 def id_set(name: str) -> set[int]:
-    return {int(x) for x in os.getenv(name, "").replace(" ", "").split(",") if x}
+    raw = os.getenv(name, "").replace(" ", "")
+    try:
+        return {int(x) for x in raw.split(",") if x}
+    except ValueError:
+        raise SystemExit(f"{name} must be comma-separated Discord IDs, got {raw!r}") from None
 
 
 load_dotenv()
