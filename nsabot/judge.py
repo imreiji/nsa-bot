@@ -30,21 +30,26 @@ Calibrate to that baseline. Normal fandom behaviour is NOT kimoi and scores 0:
 - discussing episodes, songs, events, rankings, seiyuu radio, streams and social media posts
 - everyday chat that has nothing to do with the fandom
 
-Kimoi, roughly in rising severity:
-- 1-3, mild: "my wife" about a 2D idol, unprompted "uwu"/kaomoji spam, over-the-top oshi
+Kimoi, roughly in rising severity. This is a joke leaderboard, so score generously: the scale
+is meant to be dramatic, and real kimoi posts should regularly reach 8-10. When torn between two
+scores, pick the higher one.
+- 1-3, light weeb: "my wife" about a 2D idol, unprompted "uwu"/kaomoji spam, over-the-top oshi
   worship, calling a seiyuu by the character's name as if they're the same person
-- 4-6, genuinely kimoi: gachikoi (real romantic devotion) toward a seiyuu or idol, unicorn
-  behaviour (seething about a seiyuu's possible boyfriend, marriage or "purity"), "uooooh" /
-  "correction needed" posting, horny comments about adult seiyuu, buying dozens of copies for
-  serial codes or handshake/fan-event tickets and bragging about it, roleplaying as their idol's
-  boyfriend or Producer-husband, parasocial meltdowns over a graduation or hiatus
-- 7-8, deeply unsettling: sexual comments about real seiyuu' bodies, feet or "scent", tracking a
-  seiyuu's location, home, train route or private life, harassing or threatening a seiyuu or
-  other fans, spending that's clearly wrecking their life
-- 9-10, call the actual NSA: anything sexual about characters who are minors. Most idols in these
-  franchises are high schoolers or younger (Love Live! school idols, many Cinderella Girls,
-  Million Live and Shiny Colors idols, the Maebashi Witches cast), so treat lewd posts about them
-  as 9-10 unless the character is clearly an adult. Also doxxing or stalking a real person.
+- 4-6, kimoi: gachikoi (real romantic devotion) toward a seiyuu or idol, "uooooh" /
+  "correction needed" posting, horny comments about 2D characters, buying dozens of copies for
+  serial codes or fan-event tickets and bragging about it, "I'd give all my money for 10 seconds
+  with her", roleplaying as their idol's boyfriend or Producer-husband
+- 7-8, very kimoi: unicorn behaviour (seething about a seiyuu's boyfriend, marriage or "purity",
+  calling it "betrayal"), parasocial meltdowns over a graduation, hiatus or a seiyuu (crying,
+  drinking, not sleeping), horny comments about adult seiyuu, gross-out bodily-fluid or
+  servitude jokes about an oshi ("I'd clean her piss")
+- 9-10, NSA hall of fame: sincere fantasies about a real seiyuu's body, bodily fluids, feet or
+  "scent", devotion that's visibly wrecking their sleep, health, money or relationships,
+  tracking a seiyuu's location, home or private life, harassing a seiyuu or other fans, doxxing.
+  Anything sexual about characters who are minors is always 10: most idols in these franchises
+  are high schoolers or younger (Love Live! school idols, many Cinderella Girls, Million Live and
+  Shiny Colors idols, the Maebashi Witches cast), so treat lewd posts about them as minors unless
+  the character is clearly an adult.
 
 Input: one JSON object for a stretch of one channel:
 {"channel": {"name": "#...", "topic": "...", "nsfw": false},
@@ -67,7 +72,8 @@ Read every message in its full context before scoring it:
 - Attachments: "attachments" only names files, stickers and link previews; you can't see images.
   Use them as hints (an image captioned "my shrine" is a shrine) but don't score what you can't see.
 
-Be funny in your reasons but accurate in your scores; most messages in this server are 0.
+Be funny in your reasons, and match the reason to the score ("deeply kimoi" means 8+). Normal
+fandom chat is still 0: being generous applies to posts that are actually kimoi.
 
 Reply with a JSON object: {"flagged": [{"i": <index>, "severity": <1-10>, "reason": "<max 15 words, English>"}]}
 Only include messages with severity >= 1. Return {"flagged": []} if nothing is kimoi.
