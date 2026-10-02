@@ -46,3 +46,49 @@ def test_parse_verdicts_clamps_and_drops_garbage():
     assert parse_verdicts(raw, 3) == {0: (10, "uooh")}
     with pytest.raises(json.JSONDecodeError):
         parse_verdicts("not json", 3)
+
+
+def test_reporting_watch_and_usage():
+    db = DB(":memory:")
+    db.save_message(msg(1, 1))
+    db.save_message(msg(2, 1))
+    db.save_message(msg(2, 1))  # duplicate from live + scan is ignored
+    assert db.count_unjudged(1) == 2
+    db.save_verdicts([(1, 7, "uooh"), (2, 2, "mild")])
+    assert [r["id"] for r in db.unreported(1, 5)] == [1]
+    db.mark_reported([1])
+    assert db.unreported(1, 5) == []
+
+    db.set_watch(1, 99)
+    assert db.watched() == {1: 99}
+    db.set_watch(1, None)
+    assert db.watched() == {}
+
+    db.add_tokens(100)
+    db.add_tokens(50)
+    assert db.tokens_today() == 150
+
+
+def test_judge_stops_at_budget():
+    import asyncio
+    from types import SimpleNamespace
+
+    from nsabot.judge import BudgetExceeded, Judge
+
+    db = DB(":memory:")
+    judge = Judge("key", "model", "http://localhost", db, daily_token_budget=1000)
+    calls = []
+
+    async def fake_create(**kwargs):
+        calls.append(kwargs)
+        return SimpleNamespace(
+            usage=SimpleNamespace(total_tokens=600),
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"flagged": [{"i": 0, "severity": 6}]}'))],
+        )
+
+    judge.client.chat.completions.create = fake_create
+    assert asyncio.run(judge.judge([("a", "uooh")])) == {0: (6, "")}
+    asyncio.run(judge.judge([("a", "uooh")]))  # 600 used < 1000, allowed; now 1200
+    with pytest.raises(BudgetExceeded):
+        asyncio.run(judge.judge([("a", "uooh")]))
+    assert len(calls) == 2 and db.tokens_today() == 1200

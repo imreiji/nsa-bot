@@ -1,6 +1,7 @@
 """SQLite storage for scraped messages, DeepSeek verdicts, scan cursors and opt-outs."""
 
 import sqlite3
+from datetime import datetime, timezone
 from dataclasses import dataclass
 
 SCHEMA = """
@@ -12,7 +13,8 @@ CREATE TABLE IF NOT EXISTS messages (
     author_name TEXT NOT NULL,
     content     TEXT NOT NULL,
     severity    INTEGER,               -- NULL = not judged yet, 0 = clean, 1-10 = kimoi
-    reason      TEXT
+    reason      TEXT,
+    reported    INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_messages_unjudged ON messages (guild_id, severity);
 CREATE INDEX IF NOT EXISTS idx_messages_author ON messages (guild_id, author_id);
@@ -20,6 +22,16 @@ CREATE INDEX IF NOT EXISTS idx_messages_author ON messages (guild_id, author_id)
 CREATE TABLE IF NOT EXISTS cursors (
     channel_id INTEGER PRIMARY KEY,
     last_id    INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS watch (
+    guild_id          INTEGER PRIMARY KEY,
+    report_channel_id INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS usage (
+    day    TEXT PRIMARY KEY,           -- UTC date
+    tokens INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS optouts (
@@ -63,6 +75,9 @@ class DB:
         self.conn = sqlite3.connect(path)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(messages)")}
+        if "reported" not in cols:  # databases created before live reporting existed
+            self.conn.execute("ALTER TABLE messages ADD COLUMN reported INTEGER NOT NULL DEFAULT 0")
 
     # --- scraping -----------------------------------------------------------
 
@@ -81,6 +96,14 @@ class DB:
                 "INSERT INTO cursors (channel_id, last_id) VALUES (?, ?)"
                 " ON CONFLICT (channel_id) DO UPDATE SET last_id = excluded.last_id",
                 (channel_id, last_id),
+            )
+
+    def save_message(self, m: Message) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO messages (id, guild_id, channel_id, author_id, author_name, content)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (m.id, m.guild_id, m.channel_id, m.author_id, m.author_name, m.content),
             )
 
     # --- judging ------------------------------------------------------------
@@ -103,6 +126,51 @@ class DB:
             self.conn.executemany(
                 "UPDATE messages SET severity = ?, reason = ? WHERE id = ?",
                 [(sev, reason, mid) for mid, sev, reason in verdicts],
+            )
+
+    def unreported(self, guild_id: int, min_severity: int) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT id, channel_id, author_id, author_name, content, severity, reason FROM messages"
+            " WHERE guild_id = ? AND reported = 0 AND severity >= ? ORDER BY id",
+            (guild_id, min_severity),
+        ).fetchall()
+
+    def mark_reported(self, ids: list[int]) -> None:
+        with self.conn:
+            self.conn.executemany("UPDATE messages SET reported = 1 WHERE id = ?", [(i,) for i in ids])
+
+    # --- live watch ---------------------------------------------------------
+
+    def watched(self) -> dict[int, int]:
+        """{guild_id: report_channel_id} for every guild with live watching on."""
+        return {r["guild_id"]: r["report_channel_id"] for r in self.conn.execute("SELECT * FROM watch")}
+
+    def set_watch(self, guild_id: int, report_channel_id: int | None) -> None:
+        with self.conn:
+            if report_channel_id is None:
+                self.conn.execute("DELETE FROM watch WHERE guild_id = ?", (guild_id,))
+            else:
+                self.conn.execute(
+                    "INSERT INTO watch VALUES (?, ?) ON CONFLICT (guild_id)"
+                    " DO UPDATE SET report_channel_id = excluded.report_channel_id",
+                    (guild_id, report_channel_id),
+                )
+
+    # --- API budget ---------------------------------------------------------
+
+    @staticmethod
+    def _today() -> str:
+        return datetime.now(timezone.utc).date().isoformat()
+
+    def tokens_today(self) -> int:
+        row = self.conn.execute("SELECT tokens FROM usage WHERE day = ?", (self._today(),)).fetchone()
+        return row["tokens"] if row else 0
+
+    def add_tokens(self, n: int) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO usage VALUES (?, ?) ON CONFLICT (day) DO UPDATE SET tokens = tokens + excluded.tokens",
+                (self._today(), n),
             )
 
     # --- ranking ------------------------------------------------------------
