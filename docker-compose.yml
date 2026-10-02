@@ -1,0 +1,12 @@
+services:
+  nsa-bot:
+    build: .
+    env_file: .env
+    environment:
+      NSA_DB_PATH: /data/nsa.db
+    volumes:
+      - nsa-data:/data
+    restart: unless-stopped
+
+volumes:
+  nsa-data:

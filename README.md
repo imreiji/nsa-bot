@@ -64,16 +64,40 @@ severity. The rubric is in `nsabot/judge.py` (`JUDGE_PROMPT`); edit it to fit yo
 
 ## Setup
 
-1. Create a bot at <https://discord.com/developers/applications>, enable the **Message Content**
-   intent, turn off **Public Bot**, and invite it with View Channels, Read Message History,
-   Send Messages, Embed Links.
-2. Get a DeepSeek API key at <https://platform.deepseek.com>.
-3. Run it:
+### 1. Discord bot
+
+1. <https://discord.com/developers/applications> → **New Application**.
+2. **Bot** tab: **Reset Token** and copy it (`DISCORD_TOKEN`). Turn on **Message Content Intent**.
+   Turn off **Public Bot**.
+3. Invite it (replace `APP_ID` with the Application ID from **General Information**):
+   `https://discord.com/oauth2/authorize?client_id=APP_ID&scope=bot&permissions=84992`
+   (View Channels, Send Messages, Embed Links, Read Message History.)
+4. In Discord, **Settings → Advanced → Developer Mode** on, then right-click yourself → **Copy User
+   ID** (`NSA_ADMIN_IDS`) and right-click the server → **Copy Server ID** (`NSA_GUILD_IDS`).
+5. Create a channel for reports, e.g. `#kimoi-reports`. Hide the bot from channels it shouldn't read.
+
+### 2. DeepSeek
+
+Get an API key at <https://platform.deepseek.com> (`DEEPSEEK_API_KEY`) and top up a small balance.
+
+### 3. Run it (any always-on Linux box with Docker)
 
 ```sh
-cp .env.example .env   # fill in tokens, NSA_ADMIN_IDS and NSA_GUILD_IDS
-python -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m nsabot.bot
+git clone https://github.com/imreiji/nsa-bot && cd nsa-bot
+cp .env.example .env && nano .env      # tokens, NSA_ADMIN_IDS, NSA_GUILD_IDS
+chmod 600 .env
+docker compose up -d --build
+docker compose logs -f                 # expect "logged in as ..."
 ```
+
+Then in Discord: `!watch #kimoi-reports`, and optionally `!scanall` to go through history.
+
+- **Update**: `git pull && docker compose up -d --build`
+- **Back up the database**: `docker compose cp nsa-bot:/data/nsa.db ./nsa-backup.db`
+- The database lives in the `nsa-data` volume, so it survives rebuilds. `restart: unless-stopped`
+  brings the bot back after crashes and reboots.
+
+Without Docker: `python -m venv .venv && .venv/bin/pip install -r requirements.txt` and run
+`.venv/bin/python -m nsabot.bot` under systemd, tmux or similar.
 
 Tests: `.venv/bin/pip install pytest && .venv/bin/python -m pytest`
