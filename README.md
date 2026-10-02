@@ -26,6 +26,7 @@ run, oldest first). At most 20 reports are posted per sweep; the rest are summar
 | `!dossier [@user]` | admin UIDs | DeepSeek writes a classified report roasting the user's worst posts |
 | `!kimoiboard` | anyone | Top 10 leaderboard (no API cost) |
 | `!kimoi [@user]` | anyone | Rank, stats and worst posts with links (no API cost) |
+| `!possessive` | anyone | Posts the possessive copypasta (30s cooldown per channel) |
 | `!optout` / `!optin` | anyone | Leave the rankings (deletes your stored posts) / rejoin |
 
 ## Who can trigger API calls

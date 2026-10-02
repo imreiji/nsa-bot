@@ -88,3 +88,16 @@ def test_judge_records_usage():
     assert asyncio.run(judge.judge([("a", "uooh")])) == {0: (6, "")}
     asyncio.run(judge.judge([("a", "uooh")]))
     assert db.tokens_today() == 1200
+
+
+def test_possessive_copypasta_is_exact():
+    import os
+    os.environ.setdefault("DEEPSEEK_API_KEY", "x")
+    from nsabot.bot import POSSESSIVE
+
+    assert POSSESSIVE == (
+        "If my experiences hadn’t included the IRL possessive nature and entitlement of seiyuu and also being spit "
+        "on when someone cheered their name, I would think differently but instead, half the content here includes "
+        "poorly socialized people with their masturbatory fantasies about seiyuu that are just acting, not actually "
+        "interested.\nCreepy and possessive."
+    )

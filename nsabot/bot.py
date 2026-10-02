@@ -386,6 +386,20 @@ async def kimoi(ctx: commands.Context, member: discord.Member | None = None):
     await ctx.send(embed=embed)
 
 
+POSSESSIVE = (
+    "If my experiences hadn’t included the IRL possessive nature and entitlement of seiyuu and also being "
+    "spit on when someone cheered their name, I would think differently but instead, half the content here "
+    "includes poorly socialized people with their masturbatory fantasies about seiyuu that are just acting, "
+    "not actually interested.\nCreepy and possessive."
+)
+
+
+@bot.command(help="Post the possessive copypasta.")
+@commands.cooldown(1, 30, commands.BucketType.channel)
+async def possessive(ctx: commands.Context):
+    await ctx.send(POSSESSIVE)
+
+
 @bot.command(help="Remove yourself from surveillance and delete your stored posts.")
 async def optout(ctx: commands.Context):
     db.opt_out(ctx.guild.id, ctx.author.id)

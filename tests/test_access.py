@@ -57,7 +57,7 @@ def test_api_commands_need_admin_in_listed_guild(command):
     assert not asyncio.run(passes_checks(command, ctx(ADMIN, None)))  # DMs
 
 
-@pytest.mark.parametrize("command", ["kimoiboard", "kimoi", "optout", "optin", "help"])
+@pytest.mark.parametrize("command", ["kimoiboard", "kimoi", "optout", "optin", "possessive", "help"])
 def test_public_commands_still_need_listed_guild(command):
     assert asyncio.run(passes_checks(command, ctx(RANDO)))
     assert not asyncio.run(passes_checks(command, ctx(RANDO, OTHER_GUILD)))
