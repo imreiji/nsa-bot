@@ -146,7 +146,8 @@ class DB:
 
     # --- judging ------------------------------------------------------------
 
-    def unjudged(self, guild_id: int, limit: int) -> list[sqlite3.Row]:
+    def unjudged(self, guild_id: int, limit: int = -1) -> list[sqlite3.Row]:
+        """Queued messages to score, grouped by channel in order. limit -1 = all."""
         return self.conn.execute(
             "SELECT id, channel_id FROM messages"
             " WHERE guild_id = ? AND scored = 1 AND severity IS NULL ORDER BY channel_id, id LIMIT ?",

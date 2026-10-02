@@ -18,7 +18,6 @@ from .judge import Judge, build_payload
 log = logging.getLogger("nsabot")
 
 BATCH_SIZE = 40          # messages per DeepSeek call
-CONCURRENCY = 4          # parallel DeepSeek calls
 SAVE_EVERY = 500         # scraped messages per DB write / cursor checkpoint
 REPORT_MAX_PER_RUN = 20  # report-channel posts per sweep; the rest are summarised
 
@@ -40,6 +39,7 @@ QUEUE_TRIGGER = int(os.getenv("NSA_QUEUE_TRIGGER", "40"))
 HEARTBEAT_MINUTES = float(os.getenv("NSA_HEARTBEAT_MINUTES", "10"))
 REPORT_MIN_SEVERITY = int(os.getenv("NSA_REPORT_MIN_SEVERITY", "5"))
 MIN_CHARS = int(os.getenv("NSA_MIN_CHARS", "3"))
+CONCURRENCY = max(1, int(os.getenv("NSA_CONCURRENCY", "16")))  # DeepSeek calls in flight at once
 CONTEXT_MESSAGES = int(os.getenv("NSA_CONTEXT_MESSAGES", "15"))  # earlier messages shown before each batch
 USER_RATE = int(os.getenv("NSA_USER_RATE", "10"))  # live posts queued per user per minute; extra spam is dropped
 PREFIX = os.getenv("NSA_PREFIX", "!")
@@ -231,42 +231,56 @@ async def scrape(channel: discord.TextChannel, opted_out: set[int], progress: Pr
 
 
 async def judge_backlog(guild: discord.Guild, progress=None) -> tuple[int, int]:
-    """Run queued messages through DeepSeek, one channel stretch at a time. Returns (judged, flagged)."""
-    sem = asyncio.Semaphore(CONCURRENCY)
-    judged = flagged = 0
+    """Run every queued message through DeepSeek. Returns (judged, flagged).
 
-    async def run(channel_id: int, ids: list[int]) -> tuple[int, int]:
-        timeline = db.timeline(channel_id, ids[0], ids[-1], before=CONTEXT_MESSAGES)
-        payload, order = build_payload(channel_info(guild, channel_id), timeline, ids)
-        async with sem:
-            started = time.monotonic()
+    A pool of CONCURRENCY workers each pulls the next batch as soon as it finishes its last one,
+    so one slow call never holds the others up. Batches are one stretch of one channel.
+    """
+    rows = db.unjudged(guild.id)
+    batches: asyncio.Queue[tuple[int, list[int]]] = asyncio.Queue()
+    for channel_id, group in itertools.groupby(rows, key=lambda r: r["channel_id"]):
+        ids = [r["id"] for r in group]
+        for i in range(0, len(ids), BATCH_SIZE):
+            batches.put_nowait((channel_id, ids[i : i + BATCH_SIZE]))
+    total = len(rows)
+    if not total:
+        return 0, 0
+    log.info("judging %d posts in %d batches with %d workers", total, batches.qsize(), CONCURRENCY)
+    started = time.monotonic()
+    judged = flagged = failed_in_a_row = 0
+    dead = asyncio.Event()
+
+    async def worker() -> None:
+        nonlocal judged, flagged, failed_in_a_row
+        while not dead.is_set():
+            try:
+                channel_id, ids = batches.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            timeline = db.timeline(channel_id, ids[0], ids[-1], before=CONTEXT_MESSAGES)
+            payload, order = build_payload(channel_info(guild, channel_id), timeline, ids)
+            t0 = time.monotonic()
             try:
                 result = await judge.judge(payload, len(order))
             except Exception:
                 log.exception("judge batch failed; leaving %d messages queued", len(order))
-                return 0, 0
-        log.info("judged %d posts in %s: %d flagged (%.0fs)",
-                 len(order), payload["channel"]["name"], len(result), time.monotonic() - started)
-        db.save_verdicts([(mid, *result.get(i, (0, None))) for i, mid in enumerate(order)])
-        return len(order), len(result)
+                failed_in_a_row += 1
+                if failed_in_a_row >= max(3, CONCURRENCY):  # the API is down; stop instead of burning the queue
+                    log.error("%d batches failed in a row, stopping this sweep", failed_in_a_row)
+                    dead.set()
+                continue
+            failed_in_a_row = 0
+            db.save_verdicts([(mid, *result.get(i, (0, None))) for i, mid in enumerate(order)])
+            judged += len(order)
+            flagged += len(result)
+            log.info("judged %d posts in %s: %d flagged (%.0fs)",
+                     len(order), payload["channel"]["name"], len(result), time.monotonic() - t0)
+            if progress:
+                rate = judged / (time.monotonic() - started)
+                eta = (total - judged) / rate / 60 if rate else 0
+                await progress(f"🕵️ Analysed {judged:,}/{total:,} posts, {flagged:,} flagged as kimoi, ~{eta:.0f} min left…")
 
-    while True:
-        rows = db.unjudged(guild.id, BATCH_SIZE * CONCURRENCY * 4)
-        if not rows:
-            break
-        batches = []  # never mix channels in one batch
-        for channel_id, group in itertools.groupby(rows, key=lambda r: r["channel_id"]):
-            ids = [r["id"] for r in group]
-            batches += [(channel_id, ids[i : i + BATCH_SIZE]) for i in range(0, len(ids), BATCH_SIZE)]
-        results = await asyncio.gather(*(run(c, ids) for c, ids in batches))
-        round_judged = sum(j for j, _ in results)
-        judged += round_judged
-        flagged += sum(f for _, f in results)
-        if progress:
-            left = db.count_unjudged(guild.id)
-            await progress(f"🕵️ Analysed {judged:,} posts, {flagged:,} flagged as kimoi, {left:,} to go…", force=True)
-        if round_judged == 0:  # every batch failed; don't spin on a dead API
-            break
+    await asyncio.gather(*(worker() for _ in range(min(CONCURRENCY, batches.qsize()))))
     return judged, flagged
 
 

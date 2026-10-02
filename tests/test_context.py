@@ -107,3 +107,47 @@ def test_judge_backlog_batches_per_channel_with_context():
     assert [m.get("i") for m in ll["messages"]] == [0, None, 1]  # "w" is context only
     assert b.db.count_unjudged(GUILD) == 0
     assert b.db.leaderboard(GUILD)[0].judged == 3  # context rows never count toward stats
+
+
+def _seed(n, channel=50):
+    b.db.conn.execute("DELETE FROM messages")
+    b.db.save_batch(channel, n, [row(i, channel=channel, text=f"post {i}") for i in range(1, n + 1)])
+
+
+def _guild():
+    return NS(id=GUILD, get_channel_or_thread=lambda _: NS(name="general", topic=None, is_nsfw=lambda: False))
+
+
+def test_worker_pool_keeps_concurrency_full(monkeypatch):
+    monkeypatch.setattr(b, "CONCURRENCY", 5)
+    in_flight = peak = 0
+
+    async def fake_create(**kwargs):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.01)
+        in_flight -= 1
+        return NS(usage=None, choices=[NS(finish_reason="stop", message=NS(content='{"flagged": []}'))])
+
+    b.judge.client.chat.completions.create = fake_create
+    _seed(40 * 12)  # 12 batches
+    assert asyncio.run(b.judge_backlog(_guild())) == (480, 0)
+    assert peak == 5
+    assert b.db.count_unjudged(GUILD) == 0
+
+
+def test_worker_pool_stops_when_api_is_down(monkeypatch):
+    monkeypatch.setattr(b, "CONCURRENCY", 3)
+    calls = 0
+
+    async def broken(**kwargs):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("503")
+
+    b.judge.client.chat.completions.create = broken
+    _seed(40 * 50)  # 50 batches
+    assert asyncio.run(b.judge_backlog(_guild())) == (0, 0)
+    assert calls <= 6  # gave up after a few failures instead of trying all 50
+    assert b.db.count_unjudged(GUILD) == 2000  # nothing lost, all still queued
