@@ -156,7 +156,7 @@ class DB:
                     (guild_id, report_channel_id),
                 )
 
-    # --- API budget ---------------------------------------------------------
+    # --- API usage (informational) ---------------------------------------------------------
 
     @staticmethod
     def _today() -> str:

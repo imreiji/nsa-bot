@@ -69,18 +69,16 @@ def test_reporting_watch_and_usage():
     assert db.tokens_today() == 150
 
 
-def test_judge_stops_at_budget():
+def test_judge_records_usage():
     import asyncio
     from types import SimpleNamespace
 
-    from nsabot.judge import BudgetExceeded, Judge
+    from nsabot.judge import Judge
 
     db = DB(":memory:")
-    judge = Judge("key", "model", "http://localhost", db, daily_token_budget=1000)
-    calls = []
+    judge = Judge("key", "model", "http://localhost", db)
 
     async def fake_create(**kwargs):
-        calls.append(kwargs)
         return SimpleNamespace(
             usage=SimpleNamespace(total_tokens=600),
             choices=[SimpleNamespace(message=SimpleNamespace(content='{"flagged": [{"i": 0, "severity": 6}]}'))],
@@ -88,7 +86,5 @@ def test_judge_stops_at_budget():
 
     judge.client.chat.completions.create = fake_create
     assert asyncio.run(judge.judge([("a", "uooh")])) == {0: (6, "")}
-    asyncio.run(judge.judge([("a", "uooh")]))  # 600 used < 1000, allowed; now 1200
-    with pytest.raises(BudgetExceeded):
-        asyncio.run(judge.judge([("a", "uooh")]))
-    assert len(calls) == 2 and db.tokens_today() == 1200
+    asyncio.run(judge.judge([("a", "uooh")]))
+    assert db.tokens_today() == 1200

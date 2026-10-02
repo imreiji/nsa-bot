@@ -22,28 +22,38 @@ run, oldest first). At most 20 reports are posted per sweep; the rest are summar
 |---|---|---|
 | `!watch #channel` / `!unwatch` | admin UIDs | Start / stop live surveillance and set the report channel |
 | `!scan [#ch ...]` / `!scanall` | admin UIDs | Judge channel history (default: current channel) |
-| `!budget` | admin UIDs | Tokens used today vs. budget, queue size |
+| `!usage` | admin UIDs | DeepSeek tokens used today, queue size |
 | `!dossier [@user]` | admin UIDs | DeepSeek writes a classified report roasting the user's worst posts |
 | `!kimoiboard` | anyone | Top 10 leaderboard (no API cost) |
 | `!kimoi [@user]` | anyone | Rank, stats and worst posts with links (no API cost) |
 | `!optout` / `!optin` | anyone | Leave the rankings (deletes your stored posts) / rejoin |
 
-## Cost and access controls
+## Who can trigger API calls
 
-- **Admins are hardcoded**: only user IDs in `NSA_ADMIN_IDS` can run anything that calls DeepSeek
-  or changes what is watched. Discord roles and permissions don't grant access.
-- **Server allowlist**: the bot only works in `NSA_GUILD_IDS` and leaves any other server it's added
-  to, so nobody can invite it elsewhere and run up your bill. The bot refuses to start without both.
-- **Daily token budget**: `NSA_DAILY_TOKEN_BUDGET` (default 1M tokens/day, counted from DeepSeek's
-  reported usage). Once hit, posts stay queued until UTC midnight and the report channel gets one
-  warning. Up to 4 batches already in flight can finish, so it can overshoot by roughly 30k tokens.
+DeepSeek is only called from two code paths, and both are locked down:
+
+- **Judging** (`process()` in `nsabot/bot.py`) runs from `!scan` / `!scanall`, which only
+  `NSA_ADMIN_IDS` can use, or from live watching, which only an admin can turn on with `!watch`.
+  It also refuses to run for any server not in `NSA_GUILD_IDS`.
+- **`!dossier`** is admin-only.
+
+Everything else anyone can run (`!kimoiboard`, `!kimoi`, `!optout`, `!optin`) only reads the
+local database. Other protections:
+
+- **Hardcoded admins**: Discord roles and permissions grant nothing; only the IDs in
+  `NSA_ADMIN_IDS` count. Commands in DMs are refused.
+- **Server allowlist**: the bot leaves any server not in `NSA_GUILD_IDS`, so nobody can invite it
+  elsewhere. It refuses to start unless both lists are set.
+- **Spam can't buy API calls**: in live mode each user can queue at most `NSA_USER_RATE` posts per
+  minute (default 10); anything beyond that is dropped, not judged. Bots and commands are never
+  queued.
 - **Bounded requests**: output is capped per call, retries are limited to 2, messages are truncated
   to 800 characters, and very short messages are skipped.
 - **Prompt injection**: posts are sent as JSON data, and the model is told never to follow
   instructions inside them. Worst case, someone games their own score.
-- **Outside the bot**: in the Discord developer portal, turn off **Public Bot** so only you can
-  invite it. DeepSeek is prepaid, so only top up what you're willing to lose. That's your real
-  hard cap if the bot or its token ever leaks. Never commit `.env`.
+- **Usage**: `!usage` shows today's token count (no cap; it's just for watching the bill).
+- **Outside the bot**: turn off **Public Bot** in the Discord developer portal so only you can
+  invite it, keep the DeepSeek balance small (it's prepaid), and never commit `.env`.
 
 ## Scoring
 

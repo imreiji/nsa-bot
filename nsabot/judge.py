@@ -42,27 +42,17 @@ Be funny and roast their otaku behaviour, but do not insult appearance,
 race, gender, or anything other than what they posted. Plain text, no markdown headers."""
 
 
-class BudgetExceeded(Exception):
-    pass
-
-
 class Judge:
-    def __init__(self, api_key: str, model: str, base_url: str, db: DB, daily_token_budget: int):
+    def __init__(self, api_key: str, model: str, base_url: str, db: DB):
         # Bounded retries/timeouts so a flaky API can't stall a sweep or multiply spend.
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=2, timeout=120)
         self.model = model
         self.db = db
-        self.daily_token_budget = daily_token_budget
-
-    def budget_left(self) -> int:
-        return max(0, self.daily_token_budget - self.db.tokens_today())
 
     async def _complete(self, **kwargs):
-        if self.budget_left() <= 0:
-            raise BudgetExceeded(f"daily DeepSeek budget of {self.daily_token_budget:,} tokens used up")
         resp = await self.client.chat.completions.create(model=self.model, **kwargs)
         if resp.usage:
-            self.db.add_tokens(resp.usage.total_tokens)
+            self.db.add_tokens(resp.usage.total_tokens)  # informational, shown by !usage
         return resp
 
     async def judge(self, messages: list[tuple[str, str]]) -> dict[int, tuple[int, str]]:

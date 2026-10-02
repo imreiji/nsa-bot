@@ -10,7 +10,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from .db import DB, Message
-from .judge import BudgetExceeded, Judge
+from .judge import Judge
 
 log = logging.getLogger("nsabot")
 
@@ -33,6 +33,7 @@ QUEUE_TRIGGER = int(os.getenv("NSA_QUEUE_TRIGGER", "40"))
 HEARTBEAT_MINUTES = float(os.getenv("NSA_HEARTBEAT_MINUTES", "10"))
 REPORT_MIN_SEVERITY = int(os.getenv("NSA_REPORT_MIN_SEVERITY", "5"))
 MIN_CHARS = int(os.getenv("NSA_MIN_CHARS", "3"))
+USER_RATE = int(os.getenv("NSA_USER_RATE", "10"))  # live posts queued per user per minute; extra spam is dropped
 PREFIX = os.getenv("NSA_PREFIX", "!")
 
 db = DB(os.getenv("NSA_DB_PATH", "nsa.db"))
@@ -41,7 +42,6 @@ judge = Judge(
     model=os.getenv("DEEPSEEK_MODEL", "deepseek-chat"),
     base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
     db=db,
-    daily_token_budget=int(os.getenv("NSA_DAILY_TOKEN_BUDGET", "1000000")),
 )
 
 intents = discord.Intents.default()
@@ -54,11 +54,18 @@ bot = commands.Bot(
 )
 guild_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 watching: dict[int, int] = {}       # guild_id -> report channel id
-budget_warned_day: dict[int, str] = {}
+spam_limiter = commands.CooldownMapping.from_cooldown(USER_RATE, 60, commands.BucketType.member)
 background: set[asyncio.Task] = set()  # keep references so tasks aren't garbage-collected
 
 
 # --- access control ---------------------------------------------------------
+#
+# DeepSeek is only ever called from two places, and both are gated:
+#   - process(): run by !scan/!scanall (admin UIDs only), or by live watching, which only an
+#     admin can switch on (!watch) and only in an allowlisted server. process() re-checks the
+#     allowlist itself as a last line of defence.
+#   - !dossier: admin UIDs only.
+# Everyone else's commands (!kimoiboard, !kimoi, !optout, !optin) only touch the local database.
 
 @bot.check
 async def allowed_guild(ctx: commands.Context) -> bool:
@@ -133,29 +140,22 @@ async def scrape(channel: discord.TextChannel, opted_out: set[int]) -> int:
     return saved + len(pending)
 
 
-async def judge_backlog(guild_id: int, progress=None) -> tuple[int, int, bool]:
-    """Run queued messages through DeepSeek. Returns (judged, flagged, budget_exhausted)."""
+async def judge_backlog(guild_id: int, progress=None) -> tuple[int, int]:
+    """Run queued messages through DeepSeek. Returns (judged, flagged)."""
     sem = asyncio.Semaphore(CONCURRENCY)
     judged = flagged = 0
-    out_of_budget = False
 
     async def run(rows) -> tuple[int, int]:
-        nonlocal out_of_budget
         async with sem:
-            if out_of_budget:
-                return 0, 0
             try:
                 result = await judge.judge([(r["author_name"], r["content"]) for r in rows])
-            except BudgetExceeded:
-                out_of_budget = True
-                return 0, 0
             except Exception:
                 log.exception("judge batch failed; leaving %d messages queued", len(rows))
                 return 0, 0
         db.save_verdicts([(r["id"], *result.get(i, (0, None))) for i, r in enumerate(rows)])
         return len(rows), len(result)
 
-    while not out_of_budget:
+    while True:
         rows = db.unjudged(guild_id, BATCH_SIZE * CONCURRENCY * 4)
         if not rows:
             break
@@ -168,7 +168,7 @@ async def judge_backlog(guild_id: int, progress=None) -> tuple[int, int, bool]:
             await progress(f"🕵️ Analysed {judged} posts, {flagged} flagged as kimoi…")
         if round_judged == 0:  # every batch failed; don't spin on a dead API
             break
-    return judged, flagged, out_of_budget
+    return judged, flagged
 
 
 async def report(guild: discord.Guild) -> int:
@@ -193,21 +193,13 @@ async def report(guild: discord.Guild) -> int:
     return len(rows)
 
 
-async def warn_budget(guild: discord.Guild) -> None:
-    today = discord.utils.utcnow().date().isoformat()
-    channel = guild.get_channel(watching.get(guild.id, 0))
-    if channel and budget_warned_day.get(guild.id) != today:
-        budget_warned_day[guild.id] = today
-        await channel.send("💸 Daily DeepSeek budget reached. Posts stay queued until the budget resets (UTC midnight).")
-
-
-async def process(guild: discord.Guild, progress=None) -> tuple[int, int, bool, int]:
+async def process(guild: discord.Guild, progress=None) -> tuple[int, int, int]:
     """Judge the queue and report results. Caller must hold the guild lock."""
-    judged, flagged, broke = await judge_backlog(guild.id, progress)
-    if broke:
-        await warn_budget(guild)
+    if guild.id not in GUILD_IDS:
+        raise PermissionError(f"refusing to call DeepSeek for unlisted guild {guild.id}")
+    judged, flagged = await judge_backlog(guild.id, progress)
     posted = await report(guild)
-    return judged, flagged, broke, posted
+    return judged, flagged, posted
 
 
 async def process_in_background(guild: discord.Guild) -> None:
@@ -229,8 +221,10 @@ async def intercept(m: discord.Message):
         return
     if not worth_judging(m, db.opted_out(m.guild.id)):
         return
+    if spam_limiter.update_rate_limit(m):  # flooding can't buy extra API calls
+        return
     db.save_message(to_row(m))
-    if db.count_unjudged(m.guild.id) >= QUEUE_TRIGGER and judge.budget_left() > 0:
+    if db.count_unjudged(m.guild.id) >= QUEUE_TRIGGER:
         task = asyncio.create_task(process_in_background(m.guild))
         background.add(task)
         task.add_done_callback(background.discard)
@@ -241,7 +235,7 @@ async def heartbeat():
     """Flush partial queues so quiet servers still get judged."""
     for guild_id in list(watching):
         guild = bot.get_guild(guild_id)
-        if guild and db.count_unjudged(guild_id) and judge.budget_left() > 0:
+        if guild and db.count_unjudged(guild_id):
             await process_in_background(guild)
 
 
@@ -262,12 +256,10 @@ async def run_scan(ctx: commands.Context, channels: list[discord.abc.Messageable
             except discord.Forbidden:
                 await ctx.send(f"No clearance for {ch.mention}, skipping.")
         await status.edit(content=f"📡 Intercepted {scraped} new posts. Handing them to the analyst…")
-        judged, flagged, broke, posted = await process(ctx.guild, lambda text: status.edit(content=text))
+        judged, flagged, posted = await process(ctx.guild, lambda text: status.edit(content=text))
         left = db.count_unjudged(ctx.guild.id)
         notes = []
-        if broke:
-            notes.append(f"Daily budget hit; {left} posts still queued.")
-        elif left:
+        if left:
             notes.append(f"{left} posts failed (API errors), rerun to retry.")
         if ctx.guild.id not in watching:
             notes.append(f"No report channel set (`{PREFIX}watch #channel`), so nothing was posted.")
@@ -320,10 +312,9 @@ async def unwatch(ctx: commands.Context):
 
 @bot.command(help="Show DeepSeek token usage and the queue.")
 @deployer_only()
-async def budget(ctx: commands.Context):
-    used = db.tokens_today()
+async def usage(ctx: commands.Context):
     await ctx.send(
-        f"💸 {used:,} / {judge.daily_token_budget:,} tokens used today (UTC). "
+        f"💸 {db.tokens_today():,} DeepSeek tokens used today (UTC). "
         f"{db.count_unjudged(ctx.guild.id)} posts queued. "
         f"Live watch: {'on' if ctx.guild.id in watching else 'off'}."
     )
@@ -416,8 +407,6 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
         await ctx.send(f"The analyst is busy. Try again in {error.retry_after:.0f}s.")
     elif isinstance(error, commands.UserInputError):
         await ctx.send(str(error))
-    elif isinstance(getattr(error, "original", None), BudgetExceeded):
-        await ctx.send("💸 Daily DeepSeek budget reached. Try again after UTC midnight.")
     else:
         log.error("command failed", exc_info=error)
         await ctx.send("Something went wrong in the field office.")
