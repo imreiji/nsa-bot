@@ -85,14 +85,13 @@ def test_judge_records_usage():
         )
 
     judge.client.chat.completions.create = fake_create
-    assert asyncio.run(judge.judge([("a", "uooh")])) == {0: (6, "")}
-    asyncio.run(judge.judge([("a", "uooh")]))
+    payload = {"channel": {"name": "#x"}, "messages": [{"i": 0, "author": "a", "text": "uooh"}]}
+    assert asyncio.run(judge.judge(payload, 1)) == {0: (6, "")}
+    asyncio.run(judge.judge(payload, 1))
     assert db.tokens_today() == 1200
 
 
 def test_possessive_copypasta_is_exact():
-    import os
-    os.environ.setdefault("DEEPSEEK_API_KEY", "x")
     from nsabot.bot import POSSESSIVE
 
     assert POSSESSIVE == (

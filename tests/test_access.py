@@ -1,17 +1,12 @@
 """Nobody outside NSA_ADMIN_IDS / NSA_GUILD_IDS can make the bot call DeepSeek."""
 
 import asyncio
-import os
 from types import SimpleNamespace as NS
 
 import pytest
 from discord.ext import commands
 
-os.environ.update(
-    DEEPSEEK_API_KEY="x", NSA_DB_PATH=":memory:", NSA_ADMIN_IDS="1", NSA_GUILD_IDS="10",
-    NSA_QUEUE_TRIGGER="3", NSA_USER_RATE="5",
-)
-import nsabot.bot as b  # noqa: E402
+import nsabot.bot as b
 
 ADMIN, RANDO, GUILD, OTHER_GUILD = 1, 2, 10, 99
 API_COMMANDS = ["scan", "scanall", "watch", "unwatch", "usage", "dossier"]
@@ -71,7 +66,8 @@ def test_process_refuses_unlisted_guild(api_calls):
 
 def msg(i, gid=GUILD, author=RANDO):
     g = guild(gid)
-    return NS(id=i, guild=g, channel=NS(id=50), content="my waifu is real",
+    return NS(id=i, guild=g, channel=NS(id=50), content="my waifu is real", clean_content="my waifu is real",
+              reference=None, attachments=[], stickers=[], embeds=[],
               author=NS(id=author, bot=False, display_name="x"))
 
 

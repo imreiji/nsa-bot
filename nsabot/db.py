@@ -14,10 +14,17 @@ CREATE TABLE IF NOT EXISTS messages (
     content     TEXT NOT NULL,
     severity    INTEGER,               -- NULL = not judged yet, 0 = clean, 1-10 = kimoi
     reason      TEXT,
-    reported    INTEGER NOT NULL DEFAULT 0
+    reported    INTEGER NOT NULL DEFAULT 0,
+    scored      INTEGER NOT NULL DEFAULT 1,  -- 0 = stored only as context for its neighbours
+    reply_to_id INTEGER,
+    reply_author_id INTEGER,
+    reply_author    TEXT,
+    reply_text      TEXT,
+    extras      TEXT                   -- attachments, stickers, embeds, forwards, as text
 );
 CREATE INDEX IF NOT EXISTS idx_messages_unjudged ON messages (guild_id, severity);
 CREATE INDEX IF NOT EXISTS idx_messages_author ON messages (guild_id, author_id);
+CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages (channel_id, id);
 
 CREATE TABLE IF NOT EXISTS cursors (
     channel_id INTEGER PRIMARY KEY,
@@ -45,6 +52,30 @@ CREATE TABLE IF NOT EXISTS optouts (
 # while frequency still accumulates.
 POINTS = "SUM(severity * severity) / 10.0"
 
+# Columns added after the first release, migrated onto existing databases.
+MIGRATIONS = {
+    "reported": "INTEGER NOT NULL DEFAULT 0",
+    "scored": "INTEGER NOT NULL DEFAULT 1",
+    "reply_to_id": "INTEGER",
+    "reply_author_id": "INTEGER",
+    "reply_author": "TEXT",
+    "reply_text": "TEXT",
+    "extras": "TEXT",
+}
+
+INSERT = (
+    "INSERT OR IGNORE INTO messages (id, guild_id, channel_id, author_id, author_name, content, scored,"
+    " reply_to_id, reply_author_id, reply_author, reply_text, extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+
+# A message plus whatever it replies to; falls back to the stored target when the reply wasn't resolved.
+TIMELINE = (
+    "SELECT m.id, m.author_name, m.content, m.extras,"
+    " COALESCE(m.reply_author, r.author_name) AS reply_author,"
+    " COALESCE(m.reply_text, r.content) AS reply_text"
+    " FROM messages m LEFT JOIN messages r ON r.id = m.reply_to_id"
+)
+
 
 @dataclass
 class Message:
@@ -54,6 +85,19 @@ class Message:
     author_id: int
     author_name: str
     content: str
+    scored: bool = True
+    reply_to_id: int | None = None
+    reply_author_id: int | None = None
+    reply_author: str | None = None
+    reply_text: str | None = None
+    extras: str | None = None
+
+    def params(self) -> tuple:
+        return (
+            self.id, self.guild_id, self.channel_id, self.author_id, self.author_name, self.content,
+            int(self.scored), self.reply_to_id, self.reply_author_id, self.reply_author, self.reply_text,
+            self.extras,
+        )
 
 
 @dataclass
@@ -76,8 +120,10 @@ class DB:
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(messages)")}
-        if "reported" not in cols:  # databases created before live reporting existed
-            self.conn.execute("ALTER TABLE messages ADD COLUMN reported INTEGER NOT NULL DEFAULT 0")
+        for name, decl in MIGRATIONS.items():
+            if name not in cols:
+                self.conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {decl}")
+        self.conn.commit()
 
     # --- scraping -----------------------------------------------------------
 
@@ -87,11 +133,7 @@ class DB:
 
     def save_batch(self, channel_id: int, last_id: int, messages: list[Message]) -> None:
         with self.conn:
-            self.conn.executemany(
-                "INSERT OR IGNORE INTO messages (id, guild_id, channel_id, author_id, author_name, content)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                [(m.id, m.guild_id, m.channel_id, m.author_id, m.author_name, m.content) for m in messages],
-            )
+            self.conn.executemany(INSERT, [m.params() for m in messages])
             self.conn.execute(
                 "INSERT INTO cursors (channel_id, last_id) VALUES (?, ?)"
                 " ON CONFLICT (channel_id) DO UPDATE SET last_id = excluded.last_id",
@@ -100,25 +142,33 @@ class DB:
 
     def save_message(self, m: Message) -> None:
         with self.conn:
-            self.conn.execute(
-                "INSERT OR IGNORE INTO messages (id, guild_id, channel_id, author_id, author_name, content)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (m.id, m.guild_id, m.channel_id, m.author_id, m.author_name, m.content),
-            )
+            self.conn.execute(INSERT, m.params())
 
     # --- judging ------------------------------------------------------------
 
     def unjudged(self, guild_id: int, limit: int) -> list[sqlite3.Row]:
         return self.conn.execute(
-            "SELECT id, author_name, content FROM messages"
-            " WHERE guild_id = ? AND severity IS NULL ORDER BY channel_id, id LIMIT ?",
+            "SELECT id, channel_id FROM messages"
+            " WHERE guild_id = ? AND scored = 1 AND severity IS NULL ORDER BY channel_id, id LIMIT ?",
             (guild_id, limit),
         ).fetchall()
 
     def count_unjudged(self, guild_id: int) -> int:
         return self.conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE guild_id = ? AND severity IS NULL", (guild_id,)
+            "SELECT COUNT(*) FROM messages WHERE guild_id = ? AND scored = 1 AND severity IS NULL", (guild_id,)
         ).fetchone()[0]
+
+    def timeline(self, channel_id: int, first_id: int, last_id: int, before: int) -> list[sqlite3.Row]:
+        """Everything stored in a channel from first_id to last_id, plus `before` earlier messages."""
+        earlier = self.conn.execute(
+            TIMELINE + " WHERE m.channel_id = ? AND m.id < ? ORDER BY m.id DESC LIMIT ?",
+            (channel_id, first_id, before),
+        ).fetchall()
+        window = self.conn.execute(
+            TIMELINE + " WHERE m.channel_id = ? AND m.id BETWEEN ? AND ? ORDER BY m.id",
+            (channel_id, first_id, last_id),
+        ).fetchall()
+        return earlier[::-1] + window
 
     def save_verdicts(self, verdicts: list[tuple[int, int, str | None]]) -> None:
         """verdicts: (message_id, severity, reason)."""
@@ -213,6 +263,11 @@ class DB:
         with self.conn:
             self.conn.execute("INSERT OR IGNORE INTO optouts VALUES (?, ?)", (guild_id, user_id))
             self.conn.execute("DELETE FROM messages WHERE guild_id = ? AND author_id = ?", (guild_id, user_id))
+            self.conn.execute(
+                "UPDATE messages SET reply_author = NULL, reply_text = NULL"
+                " WHERE guild_id = ? AND reply_author_id = ?",
+                (guild_id, user_id),
+            )
 
     def opt_in(self, guild_id: int, user_id: int) -> None:
         with self.conn:

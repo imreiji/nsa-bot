@@ -1,8 +1,10 @@
 """Discord front end: watch channels, feed posts to the DeepSeek judge, report and rank the kimoi."""
 
 import asyncio
+import itertools
 import logging
 import os
+import re
 from collections import defaultdict
 
 import discord
@@ -10,7 +12,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from .db import DB, Message
-from .judge import Judge
+from .judge import Judge, build_payload
 
 log = logging.getLogger("nsabot")
 
@@ -37,6 +39,7 @@ QUEUE_TRIGGER = int(os.getenv("NSA_QUEUE_TRIGGER", "40"))
 HEARTBEAT_MINUTES = float(os.getenv("NSA_HEARTBEAT_MINUTES", "10"))
 REPORT_MIN_SEVERITY = int(os.getenv("NSA_REPORT_MIN_SEVERITY", "5"))
 MIN_CHARS = int(os.getenv("NSA_MIN_CHARS", "3"))
+CONTEXT_MESSAGES = int(os.getenv("NSA_CONTEXT_MESSAGES", "15"))  # earlier messages shown before each batch
 USER_RATE = int(os.getenv("NSA_USER_RATE", "10"))  # live posts queued per user per minute; extra spam is dropped
 PREFIX = os.getenv("NSA_PREFIX", "!")
 
@@ -108,63 +111,121 @@ def watchable(guild_id: int, channel_id: int) -> bool:
     return channel_id not in IGNORE_CHANNEL_IDS and channel_id != watching.get(guild_id)
 
 
-def worth_judging(m: discord.Message, opted_out: set[int]) -> bool:
+CUSTOM_EMOJI = re.compile(r"<a?:(\w+):\d+>")
+
+
+def plain_text(m: discord.Message) -> str:
+    """Mentions resolved to names, custom emoji shortened to :name:."""
+    return CUSTOM_EMOJI.sub(r":\1:", m.clean_content).strip()
+
+
+def describe_extras(m: discord.Message) -> str | None:
+    """Attachments, stickers, link previews and forwards as text the judge can read."""
+    parts = [f"{a.content_type or 'file'}: {a.filename}" for a in m.attachments]
+    parts += [f"sticker: {s.name}" for s in m.stickers]
+    for e in m.embeds:
+        bits = [x for x in (e.provider.name if e.provider else None, e.title, e.description) if x]
+        if bits:
+            parts.append("link preview: " + clip(" - ".join(bits), 150))
+    for snap in getattr(m, "message_snapshots", None) or []:
+        if snap.content:
+            parts.append("forwarded message: " + clip(snap.content, 200))
+    return "; ".join(parts) or None
+
+
+def classify(m: discord.Message, opted_out: set[int]) -> bool | None:
+    """True = score it, False = keep only as context for its neighbours, None = ignore."""
+    if m.author.bot or m.author.id in opted_out:
+        return None
     text = m.content.strip()
-    return (
-        not m.author.bot
-        and m.author.id not in opted_out
-        and len(text) >= MIN_CHARS
-        and not text.startswith(PREFIX)  # bot commands
-    )
+    if text.startswith(PREFIX):  # bot commands
+        return None
+    if len(text) >= MIN_CHARS:
+        return True
+    if text or m.attachments or m.stickers or m.embeds or getattr(m, "message_snapshots", None):
+        return False  # "w", "lol", image-only posts: tells the judge how people reacted
+    return None
 
 
-def to_row(m: discord.Message) -> Message:
-    return Message(m.id, m.guild.id, m.channel.id, m.author.id, m.author.display_name, m.content)
+def to_row(m: discord.Message, scored: bool, opted_out: set[int]) -> Message:
+    row = Message(m.id, m.guild.id, m.channel.id, m.author.id, m.author.display_name, plain_text(m), scored)
+    if m.reference and m.reference.message_id:
+        row.reply_to_id = m.reference.message_id
+        target = m.reference.resolved
+        if isinstance(target, discord.Message):
+            row.reply_author_id = target.author.id
+            if target.author.id not in opted_out:  # never store an opted-out user's words
+                row.reply_author = target.author.display_name
+                row.reply_text = clip(plain_text(target) or describe_extras(target) or "", 300)
+    row.extras = describe_extras(m)
+    return row
+
+
+def channel_info(guild: discord.Guild, channel_id: int) -> dict:
+    ch = guild.get_channel_or_thread(channel_id)
+    if ch is None:
+        return {"name": "#unknown"}
+    parent = getattr(ch, "parent", None)
+    info = {"name": f"#{parent.name} > {ch.name}" if isinstance(ch, discord.Thread) and parent else f"#{ch.name}"}
+    topic = getattr(ch, "topic", None) or getattr(parent, "topic", None)
+    if topic:
+        info["topic"] = clip(topic, 200)
+    info["nsfw"] = bool(ch.is_nsfw()) if hasattr(ch, "is_nsfw") else False
+    return info
 
 
 # --- pipeline: scrape -> judge -> report ------------------------------------
 
 async def scrape(channel: discord.TextChannel, opted_out: set[int]) -> int:
-    """Pull messages newer than the channel's cursor (oldest first), up to SCAN_LIMIT."""
+    """Pull messages newer than the channel's cursor (oldest first), up to SCAN_LIMIT.
+
+    Returns how many were queued for scoring (context-only messages are stored but not counted).
+    """
     cursor = db.get_cursor(channel.id)
     after = discord.Object(cursor) if cursor else None
     pending: list[Message] = []
     last_id = cursor or 0
-    saved = 0
+    to_score = 0
     async for m in channel.history(limit=SCAN_LIMIT, after=after, oldest_first=True):
         last_id = m.id
-        if worth_judging(m, opted_out):
-            pending.append(to_row(m))
+        scored = classify(m, opted_out)
+        if scored is not None:
+            pending.append(to_row(m, scored, opted_out))
+            to_score += scored
         if len(pending) >= SAVE_EVERY:
             db.save_batch(channel.id, last_id, pending)
-            saved += len(pending)
             pending = []
     if last_id:
         db.save_batch(channel.id, last_id, pending)
-    return saved + len(pending)
+    return to_score
 
 
-async def judge_backlog(guild_id: int, progress=None) -> tuple[int, int]:
-    """Run queued messages through DeepSeek. Returns (judged, flagged)."""
+async def judge_backlog(guild: discord.Guild, progress=None) -> tuple[int, int]:
+    """Run queued messages through DeepSeek, one channel stretch at a time. Returns (judged, flagged)."""
     sem = asyncio.Semaphore(CONCURRENCY)
     judged = flagged = 0
 
-    async def run(rows) -> tuple[int, int]:
+    async def run(channel_id: int, ids: list[int]) -> tuple[int, int]:
+        timeline = db.timeline(channel_id, ids[0], ids[-1], before=CONTEXT_MESSAGES)
+        payload, order = build_payload(channel_info(guild, channel_id), timeline, ids)
         async with sem:
             try:
-                result = await judge.judge([(r["author_name"], r["content"]) for r in rows])
+                result = await judge.judge(payload, len(order))
             except Exception:
-                log.exception("judge batch failed; leaving %d messages queued", len(rows))
+                log.exception("judge batch failed; leaving %d messages queued", len(order))
                 return 0, 0
-        db.save_verdicts([(r["id"], *result.get(i, (0, None))) for i, r in enumerate(rows)])
-        return len(rows), len(result)
+        db.save_verdicts([(mid, *result.get(i, (0, None))) for i, mid in enumerate(order)])
+        return len(order), len(result)
 
     while True:
-        rows = db.unjudged(guild_id, BATCH_SIZE * CONCURRENCY * 4)
+        rows = db.unjudged(guild.id, BATCH_SIZE * CONCURRENCY * 4)
         if not rows:
             break
-        batches = [rows[i : i + BATCH_SIZE] for i in range(0, len(rows), BATCH_SIZE)]
-        results = await asyncio.gather(*(run(b) for b in batches))
+        batches = []  # never mix channels in one batch
+        for channel_id, group in itertools.groupby(rows, key=lambda r: r["channel_id"]):
+            ids = [r["id"] for r in group]
+            batches += [(channel_id, ids[i : i + BATCH_SIZE]) for i in range(0, len(ids), BATCH_SIZE)]
+        results = await asyncio.gather(*(run(c, ids) for c, ids in batches))
         round_judged = sum(j for j, _ in results)
         judged += round_judged
         flagged += sum(f for _, f in results)
@@ -201,7 +262,7 @@ async def process(guild: discord.Guild, progress=None) -> tuple[int, int, int]:
     """Judge the queue and report results. Caller must hold the guild lock."""
     if guild.id not in GUILD_IDS:
         raise PermissionError(f"refusing to call DeepSeek for unlisted guild {guild.id}")
-    judged, flagged = await judge_backlog(guild.id, progress)
+    judged, flagged = await judge_backlog(guild, progress)
     posted = await report(guild)
     return judged, flagged, posted
 
@@ -223,11 +284,13 @@ async def process_in_background(guild: discord.Guild) -> None:
 async def intercept(m: discord.Message):
     if m.guild is None or m.guild.id not in watching or not watchable(m.guild.id, m.channel.id):
         return
-    if not worth_judging(m, db.opted_out(m.guild.id)):
+    opted_out = db.opted_out(m.guild.id)
+    scored = classify(m, opted_out)
+    if scored is None:
         return
     if spam_limiter.update_rate_limit(m):  # flooding can't buy extra API calls
         return
-    db.save_message(to_row(m))
+    db.save_message(to_row(m, scored, opted_out))
     if db.count_unjudged(m.guild.id) >= QUEUE_TRIGGER:
         task = asyncio.create_task(process_in_background(m.guild))
         background.add(task)

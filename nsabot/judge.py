@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime, timezone
 
 from openai import AsyncOpenAI
 
@@ -9,7 +10,10 @@ from .db import DB
 
 log = logging.getLogger(__name__)
 
-MAX_CHARS = 800  # per message sent to the model
+MAX_CHARS = 800          # per scored message sent to the model
+CONTEXT_CHARS = 300      # per context-only message
+REPLY_CHARS = 200        # per quoted reply target
+EXTRAS_CHARS = 300       # attachments / embeds description
 
 JUDGE_PROMPT = """You are the NSA (Neckbeard Surveillance Agency), an analyst auditing a Discord server for
 "kimoi" (キモい) posts: cringe, creepy or deeply unhinged otaku behaviour.
@@ -41,11 +45,29 @@ Kimoi, roughly in rising severity:
   Million Live and Shiny Colors idols, the Maebashi Witches cast), so treat lewd posts about them
   as 9-10 unless the character is clearly an adult. Also doxxing or stalking a real person.
 
-Judge each message on its own, but use the surrounding messages for context and irony: obvious
-jokes, sarcasm and quoting someone else to mock them score lower. Be funny in your reasons but
-accurate in your scores; most messages in this server are 0.
+Input: one JSON object for a stretch of one channel:
+{"channel": {"name": "#...", "topic": "...", "nsfw": false},
+ "messages": [{"i": 0, "author": "...", "time": "YYYY-MM-DD HH:MM UTC", "text": "...",
+               "reply_to": {"author": "...", "text": "..."}, "attachments": "..."}, ...]}
+Messages are in chronological order. ONLY messages with an "i" are to be scored. Messages without
+"i" are context: the earlier conversation, short reactions, image posts. Read them, never score them.
 
-You receive a JSON list of messages, each with an index "i", "author" and "text".
+Read every message in its full context before scoring it:
+- The conversation: what came before, who is talking to whom, and how others reacted.
+- Replies: "reply_to" is the message being answered. Replying "real", "same" or "based" to a kimoi
+  post endorses it and is kimoi too; a reply calling it out is not.
+- Irony: obvious jokes, sarcasm, self-aware bits, and quoting someone to mock them score lower. A
+  running joke the whole chat is in on is milder than someone who is clearly serious.
+- Escalation: one waifu joke is mild; the same person doubling down for ten messages is not.
+- Timing: "time" shows gaps. A message hours later may start a new topic rather than continue one.
+- Channel: the name and topic tell you what's normal there. In an NSFW channel lewd posts about
+  adult 2D characters are expected and score 1-2 lower. That discount never applies to minors or
+  real people.
+- Attachments: "attachments" only names files, stickers and link previews; you can't see images.
+  Use them as hints (an image captioned "my shrine" is a shrine) but don't score what you can't see.
+
+Be funny in your reasons but accurate in your scores; most messages in this server are 0.
+
 Reply with a JSON object: {"flagged": [{"i": <index>, "severity": <1-10>, "reason": "<max 15 words, English>"}]}
 Only include messages with severity >= 1. Return {"flagged": []} if nothing is kimoi.
 
@@ -74,13 +96,12 @@ class Judge:
             self.db.add_tokens(resp.usage.total_tokens)  # informational, shown by !usage
         return resp
 
-    async def judge(self, messages: list[tuple[str, str]]) -> dict[int, tuple[int, str]]:
-        """messages: (author, text) in chronological order.
+    async def judge(self, payload: dict, n: int) -> dict[int, tuple[int, str]]:
+        """payload from build_payload(); n = number of scored messages in it.
 
         Returns {index: (severity, reason)} for flagged messages only. Raises on API errors so the
         caller can leave the batch unjudged and retry later.
         """
-        payload = [{"i": i, "author": a, "text": t[:MAX_CHARS]} for i, (a, t) in enumerate(messages)]
         resp = await self._complete(
             messages=[
                 {"role": "system", "content": JUDGE_PROMPT},
@@ -90,7 +111,7 @@ class Judge:
             temperature=0.2,
             max_tokens=2000,
         )
-        return parse_verdicts(resp.choices[0].message.content or "", len(messages))
+        return parse_verdicts(resp.choices[0].message.content or "", n)
 
     async def roast(self, name: str, stats: str, posts: list[tuple[int, str, str]]) -> str:
         """posts: (severity, text, reason)."""
@@ -104,6 +125,41 @@ class Judge:
             max_tokens=400,
         )
         return (resp.choices[0].message.content or "").strip()
+
+
+def message_time(message_id: int) -> str:
+    """Discord snowflakes encode their creation time."""
+    ms = (message_id >> 22) + 1420070400000
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def build_payload(channel: dict, timeline, scored_ids: list[int]) -> tuple[dict, list[int]]:
+    """Turn a channel timeline (db.timeline rows) into the judge's input.
+
+    Messages in scored_ids get an index "i"; everything else is context. Returns the payload and
+    the message ids in index order.
+    """
+    wanted = set(scored_ids)
+    order: list[int] = []
+    messages = []
+    for r in timeline:
+        scored = r["id"] in wanted
+        item = {}
+        if scored:
+            item["i"] = len(order)
+            order.append(r["id"])
+        item["author"] = r["author_name"]
+        item["time"] = message_time(r["id"])
+        item["text"] = r["content"][: MAX_CHARS if scored else CONTEXT_CHARS]
+        if r["reply_author"] or r["reply_text"]:
+            item["reply_to"] = {
+                "author": r["reply_author"] or "unknown",
+                "text": (r["reply_text"] or "")[:REPLY_CHARS],
+            }
+        if r["extras"]:
+            item["attachments"] = r["extras"][:EXTRAS_CHARS]
+        messages.append(item)
+    return {"channel": channel, "messages": messages}, order
 
 
 def parse_verdicts(raw: str, n: int) -> dict[int, tuple[int, str]]:

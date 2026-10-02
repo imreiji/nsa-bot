@@ -56,10 +56,28 @@ local database. Other protections:
 - **Outside the bot**: turn off **Public Bot** in the Discord developer portal so only you can
   invite it, keep the DeepSeek balance small (it's prepaid), and never commit `.env`.
 
+## Context
+
+DeepSeek never sees a post on its own. Each batch is one stretch of one channel, and every message
+carries:
+
+- **Channel**: name, topic and NSFW flag (threads show as `#parent > thread`).
+- **Conversation**: the previous `NSA_CONTEXT_MESSAGES` messages (default 15) plus everything in
+  between, in order with timestamps.
+- **Replies**: the author and text of the message being replied to, looked up from the database if
+  Discord didn't include it.
+- **Attachments**: file names and types, stickers, link-preview titles (YouTube, X, etc.) and
+  forwarded messages. Images themselves aren't sent.
+- **Reactions**: short posts ("w", "lol") and image-only posts are stored as context but never
+  scored, so they don't count toward anyone's rate.
+
+Opted-out users are never stored or quoted, even as reply context. Context costs roughly 30-50%
+more tokens per batch than judging posts on their own.
+
 ## Scoring
 
-DeepSeek reads messages in batches of 40 (with surrounding context) and gives each a severity of
-0-10. A user's score is **Σ severity² / 10**: every kimoi post counts, but one 10/10 post (10 pts)
+DeepSeek reads messages in batches of up to 40 scored posts per channel and gives each a severity
+of 0-10. A user's score is **Σ severity² / 10**: every kimoi post counts, but one 10/10 post (10 pts)
 beats ten 3/10 posts (9 pts). The board also shows hit rate (kimoi posts ÷ judged posts) and average
 severity. The rubric is in `nsabot/judge.py` (`JUDGE_PROMPT`); edit it to fit your server.
 
