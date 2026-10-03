@@ -29,10 +29,10 @@ def test_access(monkeypatch):
 
 
 def test_hourly_limit_for_non_admins(monkeypatch):
-    monkeypatch.setattr(b, "ROAST_PER_USER_HOUR", 2)
-    b.roast_calls.clear()
-    assert [b.roast_allowed(GUILD, RANDO) for _ in range(3)] == [True, True, False]
-    assert all(b.roast_allowed(GUILD, ADMIN) for _ in range(10))
+    b.ai_calls.clear()
+    assert [b.ai_allowed("roast", GUILD, RANDO, 2) for _ in range(3)] == [True, True, False]
+    assert b.ai_allowed("dossier", GUILD, RANDO, 2)  # separate allowance per command
+    assert all(b.ai_allowed("roast", GUILD, ADMIN, 2) for _ in range(10))
 
 
 def test_roast_input_uses_recent_and_worst_posts():

@@ -18,30 +18,39 @@ run, oldest first). At most 20 reports are posted per sweep; the rest are summar
 
 ## Commands
 
+Every command is a slash command (`/archive`) and also works with the prefix (`!archive`). Slash
+commands are registered only in the servers in `NSA_GUILD_IDS` when the bot starts.
+
 | Command | Who | What |
 |---|---|---|
-| `!watch #channel` / `!unwatch` | admin UIDs | Start / stop live surveillance and set the report channel |
-| `!scan [#ch ...]` / `!scanall` | admin UIDs | Judge channel history (default: current channel) |
-| `!usage` | admin UIDs | DeepSeek tokens used today, queue size |
-| `!roast [@user]` | admin UIDs (everyone with `NSA_ROAST_PUBLIC=on`, 3/hour each) | Comedy roast built from their recent posts, kimoi stats and worst posts |
-| `!dossier [@user]` | admin UIDs | DeepSeek writes a classified report roasting the user's worst posts |
-| `!kimoiboard` | anyone | Top 10 leaderboard (no API cost) |
-| `!kimoi [@user]` | anyone | Rank, stats and worst posts with links (no API cost) |
-| `!help [command]` | anyone | Lists every command you can use (admins also see admin ones), or explains one |
-| `!kimoiposts [@user]` | anyone | Every kimoi post, most kimoi first, 10 per page with ⏮️ ◀️ ▶️ ⏭️ buttons (no API cost) |
-| `!possessive` | anyone | Posts the possessive copypasta (30s cooldown per channel) |
-| `!optout` / `!optin` | anyone | Leave the rankings (deletes your stored posts) / rejoin |
+| `/watch #channel` / `/unwatch` | admin UIDs | Start / stop live surveillance and set the report channel |
+| `/scan [channel]` / `/scanall` | admin UIDs | Judge history of a channel, voice chat or thread (default: current) / of everything |
+| `/usage` | admin UIDs | DeepSeek tokens used today, queue size |
+| `/dossier [@user]` | everyone (`NSA_DOSSIER_PUBLIC`, 3/hour each; admins unlimited) | Deadpan classified report on their kimoi record |
+| `/roast [@user]` | admin UIDs (everyone with `NSA_ROAST_PUBLIC=on`, 3/hour each) | Comedy roast built from their recent posts, kimoi stats and worst posts |
+| `/kimoiboard` | anyone | Top 10 leaderboard |
+| `/kimoi [@user]` | anyone | Rank, stats and worst posts with links |
+| `/archive [@user]` | anyone | Every kimoi post, most kimoi first, 10 per page with ⏮️ ◀️ ▶️ ⏭️ buttons |
+| `/possessive` | anyone | Posts the possessive copypasta (30s cooldown per channel) |
+| `/optout` / `/optin` | anyone | Leave the rankings (deletes your stored posts) / rejoin |
+| `/help [command]` | anyone | Lists every command you can use (admins also see admin ones), or explains one |
+
+Person options autocomplete from everyone on file, including people who have left the server.
+Only `/dossier` and `/roast` call DeepSeek on behalf of non-admins, and only within their hourly
+limits.
 
 ## Who can trigger API calls
 
-DeepSeek is only called from two code paths, and both are locked down:
+DeepSeek is only called from these code paths:
 
-- **Judging** (`process()` in `nsabot/bot.py`) runs from `!scan` / `!scanall`, which only
-  `NSA_ADMIN_IDS` can use, or from live watching, which only an admin can turn on with `!watch`.
+- **Judging** (`process()` in `nsabot/bot.py`) runs from `/scan` / `/scanall`, which only
+  `NSA_ADMIN_IDS` can use, or from live watching, which only an admin can turn on with `/watch`.
   It also refuses to run for any server not in `NSA_GUILD_IDS`.
-- **`!dossier`** is admin-only.
+- **VAR** reviews of self-deleted posts, only in watched servers, capped per person per hour.
+- **`/dossier` and `/roast`**: admins always; everyone else only while `NSA_DOSSIER_PUBLIC` /
+  `NSA_ROAST_PUBLIC` is on, and then a few per person per hour.
 
-Everything else anyone can run (`!kimoiboard`, `!kimoi`, `!optout`, `!optin`) only reads the
+Everything else anyone can run (`/kimoiboard`, `/kimoi`, `/archive`, `/optout`, ...) only reads the
 local database. Other protections:
 
 - **Hardcoded admins**: Discord roles and permissions grant nothing; only the IDs in
@@ -115,8 +124,9 @@ severity. The rubric is in `nsabot/judge.py` (`JUDGE_PROMPT`); edit it to fit yo
 2. **Bot** tab: **Reset Token** and copy it (`DISCORD_TOKEN`). Turn on **Message Content Intent**.
    Turn off **Public Bot**.
 3. Invite it (replace `APP_ID` with the Application ID from **General Information**):
-   `https://discord.com/oauth2/authorize?client_id=APP_ID&scope=bot&permissions=84992`
-   (View Channels, Send Messages, Embed Links, Read Message History.)
+   `https://discord.com/oauth2/authorize?client_id=APP_ID&scope=bot+applications.commands&permissions=85120`
+   (View Channels, Send Messages, Embed Links, Read Message History, View Audit Log, plus slash
+   commands.)
 4. In Discord, **Settings → Advanced → Developer Mode** on, then right-click yourself → **Copy User
    ID** (`NSA_ADMIN_IDS`) and right-click the server → **Copy Server ID** (`NSA_GUILD_IDS`).
 5. Create a channel for reports, e.g. `#kimoi-reports`. Hide the bot from channels it shouldn't read.

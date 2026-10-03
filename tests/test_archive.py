@@ -112,3 +112,13 @@ def test_archive_works_for_someone_who_left(monkeypatch):
             await b.Suspect().convert(ctx, "ghost")
 
     asyncio.run(run())
+
+
+def test_autocomplete_suggests_everyone_on_file():
+    b.db.conn.execute("DELETE FROM messages")
+    b.db.save_batch(50, 4, [Message(1, GUILD, 50, 5, "yarg_old", "a"), Message(2, GUILD, 50, 5, "yargas", "b"),
+                            Message(3, GUILD, 50, 6, "Dyrea", "c"), Message(4, GUILD, 50, 7, "big_yarg_fan", "d")])
+    choices = asyncio.run(b.suspect_autocomplete(NS(guild_id=GUILD), "yarg"))
+    assert [(c.name, c.value) for c in choices] == [("yargas", "5"), ("big_yarg_fan", "7")]  # latest names, prefix first
+    assert [c.name for c in asyncio.run(b.suspect_autocomplete(NS(guild_id=GUILD), ""))] == ["big_yarg_fan", "Dyrea", "yargas"]
+    assert asyncio.run(b.suspect_autocomplete(NS(guild_id=GUILD), "100%")) == []  # LIKE wildcards are escaped

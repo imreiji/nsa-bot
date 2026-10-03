@@ -9,7 +9,7 @@ from discord.ext import commands
 import nsabot.bot as b
 
 ADMIN, RANDO, GUILD, OTHER_GUILD = 1, 2, 10, 99
-API_COMMANDS = ["scan", "scanall", "watch", "unwatch", "usage", "dossier"]
+API_COMMANDS = ["scan", "scanall", "watch", "unwatch", "usage"]
 
 
 @pytest.fixture(autouse=True)
@@ -90,3 +90,17 @@ def test_spam_is_rate_limited_per_user(api_calls):
     finally:
         b.QUEUE_TRIGGER = 3
     assert b.db.count_unjudged(GUILD) == 5  # NSA_USER_RATE
+
+
+@pytest.mark.parametrize("command,flag", [("dossier", "DOSSIER_PUBLIC"), ("roast", "ROAST_PUBLIC")])
+def test_fun_ai_commands_follow_their_public_switch(command, flag, monkeypatch):
+    monkeypatch.setattr(b, flag, True)
+    assert asyncio.run(passes_checks(command, ctx(RANDO)))
+    assert not asyncio.run(passes_checks(command, ctx(RANDO, OTHER_GUILD)))  # still only in listed servers
+    monkeypatch.setattr(b, flag, False)
+    assert not asyncio.run(passes_checks(command, ctx(RANDO)))
+    assert asyncio.run(passes_checks(command, ctx(ADMIN)))
+
+
+def test_dossier_is_public_by_default():
+    assert b.DOSSIER_PUBLIC is True

@@ -291,6 +291,17 @@ class DB:
         ).fetchall()
         return total, rows
 
+    def author_names(self, guild_id: int, prefix: str, limit: int = 25) -> list[sqlite3.Row]:
+        """Everyone on file whose latest name starts with (or contains) prefix, for slash autocomplete."""
+        like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return self.conn.execute(
+            "SELECT author_id, author_name FROM messages WHERE id IN"
+            " (SELECT MAX(id) FROM messages WHERE guild_id = ? GROUP BY author_id)"
+            " AND author_name LIKE ? ESCAPE '\\'"
+            " ORDER BY author_name NOT LIKE ? ESCAPE '\\', author_name COLLATE NOCASE LIMIT ?",
+            (guild_id, f"%{like}%", f"{like}%", limit),
+        ).fetchall()
+
     def find_author(self, guild_id: int, query: str) -> sqlite3.Row | None:
         """Someone on file by ID, mention or the name they last posted under (for people who left)."""
         digits = query.strip("<@!>")

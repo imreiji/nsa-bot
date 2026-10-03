@@ -11,6 +11,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
@@ -42,8 +43,10 @@ SCAN_LIMIT = int(os.getenv("NSA_SCAN_LIMIT", "5000"))
 QUEUE_TRIGGER = int(os.getenv("NSA_QUEUE_TRIGGER", "40"))
 HEARTBEAT_MINUTES = float(os.getenv("NSA_HEARTBEAT_MINUTES", "10"))
 REPORT_MIN_SEVERITY = int(os.getenv("NSA_REPORT_MIN_SEVERITY", "5"))
-ROAST_PUBLIC = os.getenv("NSA_ROAST_PUBLIC", "off").lower() in ("on", "1", "true")  # let everyone use !roast
+ROAST_PUBLIC = os.getenv("NSA_ROAST_PUBLIC", "off").lower() in ("on", "1", "true")  # let everyone use /roast
 ROAST_PER_USER_HOUR = int(os.getenv("NSA_ROAST_PER_USER_HOUR", "3"))  # when public; admins are exempt
+DOSSIER_PUBLIC = os.getenv("NSA_DOSSIER_PUBLIC", "on").lower() in ("on", "1", "true")  # let everyone use /dossier
+DOSSIER_PER_USER_HOUR = int(os.getenv("NSA_DOSSIER_PER_USER_HOUR", "3"))
 VAR = os.getenv("NSA_VAR", "on").lower() not in ("off", "0", "false")  # review self-deleted posts
 VAR_MIN_SEVERITY = int(os.getenv("NSA_VAR_MIN_SEVERITY") or REPORT_MIN_SEVERITY)
 VAR_PER_USER_HOUR = int(os.getenv("NSA_VAR_PER_USER_HOUR", "5"))  # DeepSeek reviews per person per hour
@@ -79,7 +82,7 @@ bot = commands.Bot(
 guild_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 watching: dict[int, int] = {}       # guild_id -> report channel id
 spam_limiter = commands.CooldownMapping.from_cooldown(USER_RATE, 60, commands.BucketType.member)
-roast_calls: defaultdict[tuple[int, int], deque] = defaultdict(deque)  # (guild, user) -> roast times
+ai_calls: defaultdict[tuple[str, int, int], deque] = defaultdict(deque)  # (command, guild, user) -> call times
 var_calls: defaultdict[tuple[int, int], deque] = defaultdict(deque)  # (guild, user) -> review times
 last_quip: dict[int, float] = {}  # guild_id -> monotonic time of the last posted quip
 background: set[asyncio.Task] = set()  # keep references so tasks aren't garbage-collected
@@ -111,24 +114,24 @@ def deployer_only():
     return commands.check(predicate)
 
 
-def roast_access():
-    """Admins always; everyone else only with NSA_ROAST_PUBLIC=on (and then a few per hour, see !roast)."""
+def public_ai(flag: str):
+    """Admins always; everyone else only while the named *_PUBLIC flag is on (hourly limits in the command)."""
     async def predicate(ctx: commands.Context) -> bool:
-        if ctx.author.id in ADMIN_IDS or ROAST_PUBLIC:
+        if ctx.author.id in ADMIN_IDS or globals()[flag]:
             return True
         raise commands.CheckFailure("You lack clearance for that.")
-    predicate.admin_only = not ROAST_PUBLIC
+    predicate.admin_only = not globals()[flag]
     return commands.check(predicate)
 
 
-def roast_allowed(guild_id: int, user_id: int) -> bool:
-    """Non-admins get ROAST_PER_USER_HOUR roasts an hour."""
+def ai_allowed(kind: str, guild_id: int, user_id: int, per_hour: int) -> bool:
+    """Non-admins get `per_hour` uses of a DeepSeek-backed fun command per hour."""
     if user_id in ADMIN_IDS:
         return True
-    calls, now = roast_calls[(guild_id, user_id)], time.monotonic()
+    calls, now = ai_calls[(kind, guild_id, user_id)], time.monotonic()
     while calls and now - calls[0] > 3600:
         calls.popleft()
-    if len(calls) >= ROAST_PER_USER_HOUR:
+    if len(calls) >= per_hour:
         return False
     calls.append(now)
     return True
@@ -568,7 +571,9 @@ async def run_scan(ctx: commands.Context, channels: list[discord.abc.Messageable
         await ctx.send("A surveillance sweep is already running in this server.")
         return
     async with lock:
-        status = await ctx.send(f"📡 Intercepting {len(channels)} channel(s)…")
+        if ctx.interaction:
+            await ctx.send("📡 Sweep started. Progress below.", ephemeral=True)
+        status = await ctx.channel.send(f"📡 Intercepting {len(channels)} channel(s)…")
         progress = Progress(status)
         opted_out = db.opted_out(ctx.guild.id)
         scraped = 0
@@ -593,14 +598,18 @@ async def run_scan(ctx: commands.Context, channels: list[discord.abc.Messageable
         )
 
 
-@bot.command(help="Scan channels' history for kimoi posts (default: this channel). Voice chats and threads work too.")
+@bot.hybrid_command(help="Scan a channel's history for kimoi posts (default: this one). Voice chats and threads work too.")
+@app_commands.describe(channel="Channel, voice chat or thread to scan (default: this one)")
 @deployer_only()
-async def scan(ctx: commands.Context, *channels: Scannable):
-    targets = [c for c in (channels or [ctx.channel]) if watchable(ctx.guild.id, c.id)]
-    await run_scan(ctx, targets)
+async def scan(ctx: commands.Context, channel: Scannable = None):
+    target = channel or ctx.channel
+    if not watchable(ctx.guild.id, target.id):
+        await ctx.send("That channel is off-limits (the report channel or an ignored channel).", ephemeral=True)
+        return
+    await run_scan(ctx, [target])
 
 
-@bot.command(help="Scan every text channel and voice/stage chat the bot can read.")
+@bot.hybrid_command(help="Scan every text channel and voice/stage chat the bot can read.")
 @deployer_only()
 async def scanall(ctx: commands.Context):
     me = ctx.guild.me
@@ -611,7 +620,8 @@ async def scanall(ctx: commands.Context):
     await run_scan(ctx, channels)
 
 
-@bot.command(help="Start live surveillance, posting kimoi to the given report channel.")
+@bot.hybrid_command(help="Start live surveillance, posting kimoi to the given report channel.")
+@app_commands.describe(report_channel="Where kimoi reports, VAR reviews and quips about old chat go")
 @deployer_only()
 async def watch(ctx: commands.Context, report_channel: discord.TextChannel):
     perms = report_channel.permissions_for(ctx.guild.me)
@@ -626,7 +636,7 @@ async def watch(ctx: commands.Context, report_channel: discord.TextChannel):
     )
 
 
-@bot.command(help="Stop live surveillance.")
+@bot.hybrid_command(help="Stop live surveillance.")
 @deployer_only()
 async def unwatch(ctx: commands.Context):
     db.set_watch(ctx.guild.id, None)
@@ -634,7 +644,7 @@ async def unwatch(ctx: commands.Context):
     await ctx.send("Live surveillance off. Queued posts will be judged on the next scan.")
 
 
-@bot.command(help="Show DeepSeek token usage and the queue.")
+@bot.hybrid_command(help="Show DeepSeek token usage and the queue.")
 @deployer_only()
 async def usage(ctx: commands.Context):
     await ctx.send(
@@ -644,8 +654,9 @@ async def usage(ctx: commands.Context):
     )
 
 
-@bot.command(help="Have the analyst write up a classified dossier on someone.")
-@deployer_only()
+@bot.hybrid_command(help="Have the analyst write up a classified dossier on someone's kimoi record.")
+@app_commands.describe(member="Who to investigate (leave empty for yourself)")
+@public_ai("DOSSIER_PUBLIC")
 @commands.cooldown(1, 30, commands.BucketType.guild)
 async def dossier(ctx: commands.Context, member: Suspect = None):
     member = member or ctx.author
@@ -653,16 +664,20 @@ async def dossier(ctx: commands.Context, member: Suspect = None):
     if not found:
         await ctx.send(f"Insufficient evidence on {member.display_name}.")
         return
+    if not ai_allowed("dossier", ctx.guild.id, ctx.author.id, DOSSIER_PER_USER_HOUR):
+        await ctx.send(f"Dossier limit reached ({DOSSIER_PER_USER_HOUR}/hour). Records office is closed.", ephemeral=True)
+        return
     rank, s = found
     posts = [(p["severity"], p["content"], p["reason"] or "") for p in db.worst_posts(ctx.guild.id, member.id, 8)]
     stats = f"rank #{rank}, {s.hits} kimoi posts out of {s.judged}, avg severity {s.avg_severity:.1f}/10"
     async with ctx.typing():
         text = await judge.roast(member.display_name, stats, posts)
-    await ctx.send(f"**CLASSIFIED — {member.display_name}**\n{clip(text, 1900)}")
+    await ctx.send(f"**CLASSIFIED — {member.display_name}**\n{clip(text, 1900) or 'File redacted.'}")
 
 
-@bot.command(help="Get the analyst to roast someone (or yourself) based on what they post.")
-@roast_access()
+@bot.hybrid_command(help="Get the analyst to roast someone (or yourself) based on what they post.")
+@app_commands.describe(member="Who to roast (leave empty to roast yourself)")
+@public_ai("ROAST_PUBLIC")
 @commands.cooldown(1, 20, commands.BucketType.channel)
 async def roast(ctx: commands.Context, member: Suspect = None):
     member = member or ctx.author
@@ -670,8 +685,8 @@ async def roast(ctx: commands.Context, member: Suspect = None):
     if not recent:
         await ctx.send(f"No intel on {member.display_name}. Can't roast a ghost.")
         return
-    if not roast_allowed(ctx.guild.id, ctx.author.id):
-        await ctx.send(f"Roast limit reached ({ROAST_PER_USER_HOUR}/hour). The analyst needs water.")
+    if not ai_allowed("roast", ctx.guild.id, ctx.author.id, ROAST_PER_USER_HOUR):
+        await ctx.send(f"Roast limit reached ({ROAST_PER_USER_HOUR}/hour). The analyst needs water.", ephemeral=True)
         return
     found = db.standing(ctx.guild.id, member.id)
     if found:
@@ -690,7 +705,7 @@ async def roast(ctx: commands.Context, member: Suspect = None):
     await ctx.send(embed=embed)
 
 
-@bot.command(aliases=["kimoirank"], help="The kimoi leaderboard.")
+@bot.hybrid_command(aliases=["kimoirank"], help="The kimoi leaderboard.")
 @commands.cooldown(1, 10, commands.BucketType.channel)
 async def kimoiboard(ctx: commands.Context):
     rows = db.leaderboard(ctx.guild.id)
@@ -753,7 +768,7 @@ class KimoiPager(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
-                f"Open your own with `{PREFIX}kimoiposts`.", ephemeral=True
+                "Open your own with `/archive`.", ephemeral=True
             )
             return False
         return True
@@ -792,7 +807,9 @@ class KimoiPager(discord.ui.View):
                 pass
 
 
-@bot.command(aliases=["kimoilist", "archive"], help="Every kimoi post, most kimoi first, with page buttons.")
+@bot.hybrid_command(name="archive", aliases=["kimoiposts", "kimoilist"],
+                    help="Every kimoi post, most kimoi first, with page buttons.")
+@app_commands.describe(member="Only this person's posts (leave empty for everyone)")
 @commands.cooldown(1, 10, commands.BucketType.user)
 async def kimoiposts(ctx: commands.Context, member: Suspect = None):
     embed, pages = kimoi_page(ctx.guild.id, member, 0)
@@ -803,7 +820,8 @@ async def kimoiposts(ctx: commands.Context, member: Suspect = None):
     view.message = await ctx.send(embed=embed, view=view)
 
 
-@bot.command(help="A user's kimoi file: rank, stats and worst posts.")
+@bot.hybrid_command(help="A user's kimoi file: rank, stats and worst posts.")
+@app_commands.describe(member="Whose file to open (leave empty for yours)")
 @commands.cooldown(1, 10, commands.BucketType.user)
 async def kimoi(ctx: commands.Context, member: Suspect = None):
     member = member or ctx.author
@@ -836,39 +854,50 @@ POSSESSIVE = (
 )
 
 
-@bot.command(help="Post the possessive copypasta.")
+@bot.hybrid_command(help="Post the possessive copypasta.")
 @commands.cooldown(1, 30, commands.BucketType.channel)
 async def possessive(ctx: commands.Context):
     await ctx.send(POSSESSIVE)
 
 
-@bot.command(help="Remove yourself from surveillance and delete your stored posts.")
+@bot.hybrid_command(help="Remove yourself from surveillance and delete your stored posts.")
 async def optout(ctx: commands.Context):
     db.opt_out(ctx.guild.id, ctx.author.id)
     await ctx.send(f"{ctx.author.display_name} has been removed from the watchlist and their file shredded.")
 
 
-@bot.command(help="Rejoin the kimoi rankings (takes effect for new messages).")
+@bot.hybrid_command(help="Rejoin the kimoi rankings (takes effect for new messages).")
 async def optin(ctx: commands.Context):
     db.opt_in(ctx.guild.id, ctx.author.id)
     await ctx.send(f"{ctx.author.display_name} is back under surveillance. Brave.")
 
 
+async def suspect_autocomplete(interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+    """Suggest everyone on file, including people who have left (value is their ID)."""
+    rows = db.author_names(interaction.guild_id or 0, current.lstrip("@"), 25)
+    return [app_commands.Choice(name=r["author_name"][:100], value=str(r["author_id"])) for r in rows]
+
+
+for _cmd in (dossier, roast, kimoiposts, kimoi):
+    _cmd.autocomplete("member")(suspect_autocomplete)
+
+
 def usage_line(command: commands.Command) -> str:
-    return f"`{PREFIX}{command.name}{' ' + command.signature if command.signature else ''}`"
+    return f"`/{command.name}{' ' + command.signature if command.signature else ''}`"
 
 
-@bot.command(name="help", aliases=["commands"], help="List every command, or explain one: !help kimoiposts")
+@bot.hybrid_command(name="help", aliases=["commands"], help="List every command, or explain one: /help archive")
+@app_commands.describe(name="A command to explain")
 @commands.cooldown(1, 5, commands.BucketType.user)
 async def help_(ctx: commands.Context, name: str | None = None):
     if name:
-        command = bot.get_command(name.lstrip(PREFIX))
+        command = bot.get_command(name.lstrip(PREFIX).lstrip("/"))
         if command is None or (admin_only(command) and ctx.author.id not in ADMIN_IDS):
-            await ctx.send(f"No command called `{name}`. Try `{PREFIX}help`.")
+            await ctx.send(f"No command called `{name}`. Try `/help`.", ephemeral=True)
             return
         embed = discord.Embed(title=usage_line(command), description=command.help or "", color=0xE91E63)
         if command.aliases:
-            embed.add_field(name="Also works as", value=", ".join(f"`{PREFIX}{a}`" for a in command.aliases))
+            embed.add_field(name="Also works as", value=", ".join(f"`{PREFIX}{a}`" for a in [command.name, *command.aliases]))
         if admin_only(command):
             embed.set_footer(text="Admins only")
         await ctx.send(embed=embed)
@@ -887,15 +916,22 @@ async def help_(ctx: commands.Context, name: str | None = None):
     if ctx.author.id in ADMIN_IDS:
         embed.add_field(name="Admins (spend DeepSeek credit)", value=section(c for c in visible if admin_only(c)),
                         inline=False)
-    embed.set_footer(text=f"{PREFIX}help <command> for details · [optional] <required>")
+    embed.set_footer(text=f"/help <command> for details · every command also works with {PREFIX} · [optional] <required>")
     await ctx.send(embed=embed)
 
 
 # --- lifecycle --------------------------------------------------------------
 
+def describe_invocation(ctx: commands.Context) -> str:
+    if ctx.interaction:  # slash: no message text, rebuild it from the options
+        args = " ".join(f"{k}:{v}" for k, v in (ctx.interaction.namespace.__dict__ or {}).items())
+        return repr(f"/{ctx.command.qualified_name} {args}".strip()) if ctx.command else "a slash command"
+    return repr(ctx.message.content[:100])
+
+
 @bot.listen("on_command")
 async def log_command(ctx: commands.Context):
-    log.info("%s (%s) ran %r in #%s", ctx.author, ctx.author.id, ctx.message.content[:100], getattr(ctx.channel, "name", "DM"))
+    log.info("%s (%s) ran %s in #%s", ctx.author, ctx.author.id, describe_invocation(ctx), getattr(ctx.channel, "name", "DM"))
 
 
 @bot.event
@@ -903,16 +939,32 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
     if isinstance(error, commands.CommandNotFound):
         return
     if isinstance(error, commands.CheckFailure):
-        log.info("refused %r from %s (%s): %s", ctx.message.content[:50], ctx.author, ctx.author.id, error)
+        log.info("refused %s from %s (%s): %s", describe_invocation(ctx), ctx.author, ctx.author.id, error)
         if ctx.guild and ctx.guild.id in GUILD_IDS:  # stay silent in unlisted servers and DMs
-            await ctx.send(str(error))
+            await ctx.send(str(error), ephemeral=True)
     elif isinstance(error, commands.CommandOnCooldown):
-        await ctx.send(f"The analyst is busy. Try again in {error.retry_after:.0f}s.")
+        await ctx.send(f"The analyst is busy. Try again in {error.retry_after:.0f}s.", ephemeral=True)
     elif isinstance(error, commands.UserInputError):
-        await ctx.send(str(error))
+        await ctx.send(str(error), ephemeral=True)
     else:
         log.error("command failed", exc_info=error)
         await ctx.send("Something went wrong in the field office.")
+
+
+async def sync_slash_commands() -> None:
+    """Register slash commands only in the allowed servers: they appear instantly and nowhere else."""
+    for guild_id in GUILD_IDS:
+        guild = discord.Object(guild_id)
+        bot.tree.copy_global_to(guild=guild)
+        try:
+            synced = await bot.tree.sync(guild=guild)
+            log.info("registered %d slash commands in %s", len(synced), guild_id)
+        except discord.HTTPException as e:
+            log.warning("couldn't register slash commands in %s (%s). Re-invite the bot with the"
+                        " applications.commands scope; ! commands still work.", guild_id, e)
+
+
+bot.setup_hook = sync_slash_commands
 
 
 @bot.event
