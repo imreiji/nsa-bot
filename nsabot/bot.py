@@ -204,7 +204,12 @@ class Progress:
 
 
 
-async def scrape(channel: discord.TextChannel, opted_out: set[int], progress: Progress | None = None) -> int:
+# Anything with a message history: text channels, the built-in text chat of voice and stage
+# channels, and threads.
+Scannable = discord.TextChannel | discord.VoiceChannel | discord.StageChannel | discord.Thread
+
+
+async def scrape(channel: Scannable, opted_out: set[int], progress: Progress | None = None) -> int:
     """Pull messages newer than the channel's cursor (oldest first), up to SCAN_LIMIT.
 
     Returns how many were queued for scoring (context-only messages are stored but not counted).
@@ -403,19 +408,19 @@ async def run_scan(ctx: commands.Context, channels: list[discord.abc.Messageable
         )
 
 
-@bot.command(help="Scan channels' history for kimoi posts (default: this channel).")
+@bot.command(help="Scan channels' history for kimoi posts (default: this channel). Voice chats and threads work too.")
 @deployer_only()
-async def scan(ctx: commands.Context, *channels: discord.TextChannel):
+async def scan(ctx: commands.Context, *channels: Scannable):
     targets = [c for c in (channels or [ctx.channel]) if watchable(ctx.guild.id, c.id)]
     await run_scan(ctx, targets)
 
 
-@bot.command(help="Scan every text channel the bot can read.")
+@bot.command(help="Scan every text channel and voice/stage chat the bot can read.")
 @deployer_only()
 async def scanall(ctx: commands.Context):
     me = ctx.guild.me
     channels = [
-        c for c in ctx.guild.text_channels
+        c for c in [*ctx.guild.text_channels, *ctx.guild.voice_channels, *ctx.guild.stage_channels]
         if c.permissions_for(me).read_message_history and watchable(ctx.guild.id, c.id)
     ]
     await run_scan(ctx, channels)
