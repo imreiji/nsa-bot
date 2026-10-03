@@ -4,7 +4,7 @@ Labelling is more consistent than asking a model for a number, and the weights h
 (and old posts re-scored from their stored labels) without touching the prompt or the API.
 """
 
-RUBRIC_VERSION = 2  # bump when the labels or their definitions in the prompt change (then /rescore)
+RUBRIC_VERSION = 3  # bump when the labels or their definitions in the prompt change (then /rescore)
 
 # Starting points per behaviour. A post with several takes the highest, plus MULTI_BONUS.
 BASE = {
@@ -15,14 +15,14 @@ BASE = {
     "unicorn": 6,
     "life_impact": 7,
     "bodily_servitude": 7,
-    "stalking_harassment": 9,
+    "stalking_harassment": 7,
 }
 TARGET = {"real": 1, "character": 0, "minor": 0, "fan": 0, "none": 0}
 INTENSITY = {"passing": -1, "clear": 0, "graphic": 1}
 SINCERITY = {"bit": -2, "ambiguous": 0, "sincere": 1}
 DOUBLING_DOWN = 1
 MULTI_BONUS = 1
-SEXUAL = {"horny", "bodily_servitude"}  # with a minor target: always 10
+SEXUAL = {"horny", "bodily_servitude"}  # with a minor target, sincere or ambiguous, more than passing: always 10
 
 NAMES = {
     "worship": "worship",
@@ -61,6 +61,7 @@ def clean(raw: dict) -> dict:
         "sincerity": pick("sincerity", SINCERITY, "ambiguous"),
         "doubling_down": raw.get("doubling_down") is True,
         "about_someone_else": raw.get("about_someone_else") is True,
+        "distress": raw.get("distress") is True,
     }
 
 
@@ -68,9 +69,10 @@ def score(labels: dict) -> int:
     """0 = not kimoi, otherwise 1-10."""
     labels = clean(labels)
     behaviours = labels["behaviours"]
-    if not behaviours or labels["about_someone_else"]:
+    if not behaviours or labels["about_someone_else"] or labels["distress"]:
         return 0
-    if labels["target"] == "minor" and SEXUAL & set(behaviours):
+    if (labels["target"] == "minor" and SEXUAL & set(behaviours)
+            and labels["sincerity"] != "bit" and labels["intensity"] != "passing"):
         return 10
     total = (
         max(BASE[b] for b in behaviours)
@@ -113,6 +115,6 @@ def formula_lines() -> list[str]:
         "**Sincerity**: obvious bit " + signed(SINCERITY["bit"]) + ", ambiguous " + signed(SINCERITY["ambiguous"])
         + ", sincere " + signed(SINCERITY["sincere"]),
         f"**Doubling down** {signed(DOUBLING_DOWN)} · **two or more behaviours** {signed(MULTI_BONUS)}",
-        "**Kept between 1 and 10.** Horny or bodily/servitude about a minor character is always **10**; "
-        "only pointing at someone else's kimoi is **0**.",
+        "**Kept between 1 and 10.** Sincere, explicit horny or bodily/servitude content about a minor character is "
+        "always **10**. Only pointing at someone else's kimoi, and anything about self-harm or real distress, is **0**.",
     ]

@@ -22,7 +22,10 @@ GUILD, ADMIN = 10, 1
     (dict(behaviours=["bodily_servitude"], target="real", sincerity="bit"), 6),
     (dict(behaviours=["bodily_servitude"], target="real", sincerity="sincere"), 9),
     (dict(behaviours=["unicorn"], target="real", about_someone_else=True), 0),
-    (dict(behaviours=["horny"], target="minor", sincerity="bit", intensity="passing"), 10),
+    (dict(behaviours=["horny"], target="minor", sincerity="ambiguous", intensity="clear"), 10),
+    (dict(behaviours=["horny"], target="minor", sincerity="bit", intensity="passing"), 2),  # passing joke: no auto-10
+    (dict(behaviours=["life_impact"], target="real", sincerity="sincere", distress=True), 0),
+    (dict(behaviours=["stalking_harassment"], target="real", sincerity="sincere"), 9),  # 7 + real 1 + sincere 1
     (dict(behaviours=["worship"], target="character", intensity="passing", sincerity="bit"), 1),  # floor
     (dict(behaviours=["stalking_harassment", "unicorn"], target="real", intensity="graphic",
           sincerity="sincere", doubling_down=True), 10),  # ceiling
@@ -36,7 +39,7 @@ def test_formula(labels, expected):
 def test_messy_labels_fall_back_to_neutral():
     assert scoring.clean({"behaviours": "UNICORN", "target": "alien", "intensity": 7, "doubling_down": "yes"}) == {
         "behaviours": ["unicorn"], "target": "none", "intensity": "clear", "sincerity": "ambiguous",
-        "doubling_down": False, "about_someone_else": False}
+        "doubling_down": False, "about_someone_else": False, "distress": False}
     assert scoring.describe({"behaviours": ["bodily_servitude"], "target": "real", "sincerity": "sincere"}) \
         == "bodily/servitude · real person · sincere"
 
@@ -86,7 +89,7 @@ def seed(rows):
     b.db.save_batch(50, max(r[0] for r in rows), [Message(i, GUILD, 50, 5, "yargas", text) for i, text in rows])
 
 
-UNICORN = dict(behaviours=["unicorn"], target="real", sincerity="sincere", reason="purity police")
+UNICORN = dict(behaviours=["unicorn"], target="real", sincerity="sincere", reason="purity police", evidence="boyfriend")
 
 
 def test_judging_stores_labels_and_rubric_version(monkeypatch):
@@ -225,3 +228,39 @@ def test_model_and_scoring_commands():
     seed([(1, "a")])
     e = run_cmd(b.scoring_)
     assert e.title == f"📐 Kimoi scoring (rubric v{scoring.RUBRIC_VERSION})" and "**Start**" in e.description
+
+
+
+# --- evidence quotes and distress --------------------------------------------------
+
+def test_evidence_must_come_from_the_post_itself():
+    from nsabot.judge import evidence_found
+    assert evidence_found("I can never forgive this betrayal", "she has a boyfriend?? I can NEVER forgive  this betrayal")
+    assert evidence_found("推しが結婚…許せない", "え、推しが結婚した？ 許せない")  # CJK, fragments around …
+    assert not evidence_found("isn't that grooming", "and in high school")  # someone else's words
+    assert not evidence_found("", "anything") and not evidence_found("a", "a")
+
+
+def test_flags_without_real_evidence_are_dropped():
+    raw = json.dumps({"flagged": [
+        {"i": 0, "evidence": "and in high school", "behaviours": ["horny"], "target": "minor", "sincerity": "sincere"},
+        {"i": 1, "evidence": "isn't that grooming", "behaviours": ["horny"], "target": "minor", "sincerity": "sincere"},
+        {"i": 2, "behaviours": ["unicorn"], "target": "real"},  # no quote at all
+    ], "distress": [3]})
+    texts = ["and in high school", "we dont have to do anything", "she has a bf", "and hopefully die"]
+    out = parse_verdicts(raw, 4, texts)
+    assert out[0].severity == 10      # quoted correctly (and sincere): the minor rule still applies
+    assert 1 not in out and 2 not in out
+    assert out[3] == Verdict(0, "distress", {"distress": True})
+
+
+def test_distress_is_stored_as_zero_and_kept_out_of_roasts(monkeypatch):
+    def flagged_for(text):
+        return {"behaviours": ["life_impact"], "target": "real", "sincerity": "sincere", "evidence": "die",
+                "distress": True} if "die" in text else None
+    fake_api(monkeypatch, flagged_for)
+    seed([(1, "and hopefully die"), (2, "good morning")])
+    judged, flagged = asyncio.run(b.judge_backlog(guild()))
+    row = b.db.get_message(1)
+    assert (judged, flagged, row["severity"]) == (2, 0, 0) and json.loads(row["labels"]) == {"distress": True}
+    assert [r["content"] for r in b.db.recent_posts(GUILD, 5)] == ["good morning"]

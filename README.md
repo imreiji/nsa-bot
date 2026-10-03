@@ -27,6 +27,8 @@ commands are registered only in the servers in `NSA_GUILD_IDS` when the bot star
 | `/scan [channel]` / `/scanall` | admin UIDs | Judge history of a channel, voice chat or thread (default: current) / of everything |
 | `/usage` | admin UIDs | DeepSeek tokens used today, queue size |
 | `/calibrate` / `/calibration` | admin UIDs | Score posts yourself in DMs / DM report comparing the formula with your scores |
+| `/evaluate [limit]` | admin UIDs | Test the current prompt on the reviewed posts, report in DMs (nothing saved) |
+| `/notes [file]` | admin UIDs | Get the judge's server notes in DMs, or replace them with an attached file |
 | `/rescore` | admin UIDs | Re-judge posts scored under an older rubric (re-runs DeepSeek; old history isn't re-posted) |
 | `/model` | anyone | Which DeepSeek model and settings the bot uses |
 | `/scoring` | anyone | The scoring formula, thresholds and calibration accuracy |
@@ -137,17 +139,41 @@ DeepSeek doesn't pick numbers. It **labels** each kimoi post, and a fixed formul
 `nsabot/scoring.py` turns the labels into a score (`/scoring` shows it in Discord):
 
 - **behaviours**: worship 2, spending 4, gachikoi 4, horny 5, unicorn 6, life impact 7,
-  bodily/servitude 7, stalking/harassment 9 (start from the highest)
+  bodily/servitude 7, stalking/harassment 7 (start from the highest)
 - **target**: real person +1 · **intensity**: passing −1, graphic +1 · **sincerity**: obvious bit −2,
   sincere +1 · **doubling down** +1 · **two or more behaviours** +1
-- kept between 1 and 10; horny or bodily/servitude about a minor character is always 10; only
-  pointing at someone else's kimoi is 0
+- kept between 1 and 10; sincere, explicit horny or bodily/servitude content about a minor character is
+  always 10; only pointing at someone else's kimoi, and distress, is 0
 
 Labels are stored with every verdict, so changing a weight re-applies to old posts on the next start
 without any API calls. Changing the labels or their definitions in the prompt means bumping
 `RUBRIC_VERSION` and running `/rescore`.
 
 A user's leaderboard score is **Σ severity² / 10**, so one 10/10 post outweighs ten 3/10 posts.
+
+### How the judge decides (rubric v3)
+
+The prompt is an ordered checklist: first what is never flagged (distress, pointing at someone
+else's kimoi, normal fandom, normal life, friend banter between members, racial or ethnic remarks,
+quotes, links and emotes), then **evidence**, then labels. Every flag must quote the exact words
+from the post itself that show the behaviour, and the bot checks the quote really is in the post;
+flags that can't point at the words are dropped. Posts about wanting to die, self-harm or real
+distress score 0, are marked as distress, and are kept out of roasts, dossiers and quips.
+
+### Server notes
+
+`/notes` (admins) shows the judge's who's-who, and attaching a `.md` or `.txt` file to `/notes`
+replaces it: who the members are, which names are seiyuu (adults) or characters (and which are
+minors), and the server's running bits. The file lives next to the database (`NSA_SERVER_NOTES`,
+default `/data/server_notes.md` in Docker), never in the repo, and applies to the next judging call.
+
+### Evaluation
+
+`/evaluate` (admins) re-judges the reviewed posts in `eval/review_set.jsonl` with the current prompt,
+saves nothing, and DMs a before/after report: average gap to the review, share within 1 point,
+false flags, safety posts still flagged, how many 10s, and the worst misses. The review set holds
+only message IDs and scores; the posts come from the bot's own database. `/evaluate limit:100` is a
+quick, cheap check. A full run is a few hundred calls, roughly $1-3 with thinking on.
 
 ### Calibration
 

@@ -1,6 +1,7 @@
 """Discord front end: watch channels, feed posts to the DeepSeek judge, report and rank the kimoi."""
 
 import asyncio
+import io
 import itertools
 import json
 import logging
@@ -16,9 +17,9 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-from . import api, scoring
+from . import api, evaluate, scoring
 from .db import DB, Message
-from .judge import VAR_NOTE, Judge, Truncated, Verdict, anchors_text, build_payload, message_time
+from .judge import PARSE_STATS, VAR_NOTE, Judge, Truncated, Verdict, anchors_text, build_payload, message_time
 
 log = logging.getLogger("nsabot")
 
@@ -66,10 +67,16 @@ QUIPS = os.getenv("NSA_QUIPS", "on").lower() not in ("off", "0", "false")  # the
 QUIP_COOLDOWN = float(os.getenv("NSA_QUIP_COOLDOWN_MINUTES", "30")) * 60  # at most one per server this often
 CONCURRENCY = max(1, int(os.getenv("NSA_CONCURRENCY", "16")))  # DeepSeek calls in flight at once
 CONTEXT_MESSAGES = int(os.getenv("NSA_CONTEXT_MESSAGES", "15"))  # earlier messages shown before each batch
+AFTER_MESSAGES = 5  # later messages shown after each batch when they exist (how people reacted)
 USER_RATE = int(os.getenv("NSA_USER_RATE", "10"))  # live posts queued per user per minute; extra spam is dropped
 PREFIX = os.getenv("NSA_PREFIX", "!")
 
-db = DB(os.getenv("NSA_DB_PATH", "nsa.db"))
+DB_PATH = os.getenv("NSA_DB_PATH", "nsa.db")
+db = DB(DB_PATH)
+# Admin-maintained who's-who for the judge (members, seiyuu, characters, running bits). Lives next to
+# the database, outside the repo, and is managed with /notes.
+SERVER_NOTES_PATH = os.getenv("NSA_SERVER_NOTES", os.path.join(os.path.dirname(DB_PATH) or ".", "server_notes.md"))
+SERVER_NOTES_MAX = 8000
 judge = Judge(
     api_key=os.environ["DEEPSEEK_API_KEY"],
     model=os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
@@ -282,6 +289,29 @@ def tags(labels_json: str | None) -> str:
     return scoring.describe(json.loads(labels_json)) if labels_json else ""
 
 
+_notes_cache: tuple[float, str] = (-1.0, "")
+
+
+def server_notes() -> str:
+    """The admins' server notes, re-read when the file changes."""
+    global _notes_cache
+    try:
+        mtime = os.path.getmtime(SERVER_NOTES_PATH)
+    except OSError:
+        return ""
+    if mtime != _notes_cache[0]:
+        with open(SERVER_NOTES_PATH, encoding="utf-8") as f:
+            _notes_cache = (mtime, f.read()[:SERVER_NOTES_MAX])
+    return _notes_cache[1]
+
+
+def prompt_extras(guild_id: int) -> str:
+    """Server notes plus calibration examples, appended to the judge's system prompt."""
+    notes = server_notes().strip()
+    head = ("\n\nServer notes from the admins (who's who; trust these over your own guesses):\n" + notes) if notes else ""
+    return head + anchors_for(guild_id)
+
+
 def anchors_for(guild_id: int) -> str:
     """Up to 2 admin-scored posts per score band where the formula agrees (within 1), for the prompt."""
     cached = anchor_cache.get(guild_id)
@@ -389,12 +419,13 @@ async def judge_backlog(guild: discord.Guild, progress=None) -> tuple[int, int]:
                 channel_id, ids = batches.get_nowait()
             except asyncio.QueueEmpty:
                 return
-            timeline = db.timeline(channel_id, ids[0], ids[-1], before=CONTEXT_MESSAGES)
+            timeline = (db.timeline(channel_id, ids[0], ids[-1], before=CONTEXT_MESSAGES)
+                        + db.timeline_after(channel_id, ids[-1], AFTER_MESSAGES))
             payload, order = build_payload(channel_info(guild, channel_id), timeline, ids)
             t0 = time.monotonic()
             quip = quip_allowed(guild.id)
             try:
-                result, joke = await judge.judge_with_quip(payload, len(order), quip, anchors=anchors_for(guild.id))
+                result, joke = await judge.judge_with_quip(payload, len(order), quip, anchors=prompt_extras(guild.id))
             except Truncated:
                 if len(ids) >= MIN_SPLIT * 2:  # too much to think about at once: retry as two halves
                     half = len(ids) // 2
@@ -421,9 +452,10 @@ async def judge_backlog(guild: discord.Guild, progress=None) -> tuple[int, int]:
             db.save_verdicts([(mid, *result.get(i, Verdict(0, None))) for i, mid in enumerate(order)],
                              scoring.RUBRIC_VERSION)
             judged += len(order)
-            flagged += len(result)
+            hits = sum(v.severity > 0 for v in result.values())
+            flagged += hits
             log.info("judged %d posts in %s: %d flagged (%.0fs)",
-                     len(order), payload["channel"]["name"], len(result), time.monotonic() - t0)
+                     len(order), payload["channel"]["name"], hits, time.monotonic() - t0)
             if progress:
                 rate = judged / (time.monotonic() - started)
                 eta = (total - judged) / rate / 60 if rate else 0
@@ -734,7 +766,7 @@ async def var_review(event: discord.RawMessageDeleteEvent):
         timeline = db.timeline(cid, mid, mid, before=CONTEXT_MESSAGES) + db.timeline_after(cid, mid, VAR_AFTER)
         payload, _ = build_payload(channel_info(guild, cid), timeline, [mid])
         try:
-            result, _ = await judge.judge_with_quip(payload, 1, quip=False, note=VAR_NOTE, anchors=anchors_for(gid))
+            result, _ = await judge.judge_with_quip(payload, 1, quip=False, note=VAR_NOTE, anchors=prompt_extras(gid))
         except Exception:
             log.exception("VAR review of %s failed", mid)
             return
@@ -1050,6 +1082,149 @@ async def rescore(ctx: commands.Context):
         await status.edit(content=f"✅ Rescore done: {judged:,} posts re-scored, {flagged:,} kimoi."
                           + (f" {left:,} still queued (API errors), run `/rescore` or `/scan` again." if left else "")
                           + " Old history isn't re-posted to the report channel.")
+
+
+# --- prompt tuning: evaluation and server notes (admins) ----------------------
+
+async def run_evaluation(guild: discord.Guild, progress=None, limit: int | None = None) -> dict:
+    """Re-judge the reviewed posts with the current prompt (nothing is saved) and score the result."""
+    rows = evaluate.load_review_set()
+    posts, wanted = [], {}
+    for r in rows:
+        stored = db.get_message(int(r["id"]))
+        if stored and stored["guild_id"] == guild.id:
+            posts.append((stored["channel_id"], stored["id"]))
+            wanted[stored["id"]] = r
+    if limit:
+        posts = posts[:limit]
+    batches = evaluate.group_batches(posts, db.count_between, BATCH_SIZE)
+    new: dict[int, int] = {}
+    sem, done = asyncio.Semaphore(CONCURRENCY), 0
+    PARSE_STATS.clear()
+    tokens_before = db.tokens_today()
+    extras = prompt_extras(guild.id)
+
+    async def one(channel_id: int, ids: list[int]) -> None:
+        nonlocal done
+        timeline = (db.timeline(channel_id, ids[0], ids[-1], before=CONTEXT_MESSAGES)
+                    + db.timeline_after(channel_id, ids[-1], AFTER_MESSAGES))
+        payload, order = build_payload(channel_info(guild, channel_id), timeline, ids)
+        async with sem:
+            for attempt in range(3):
+                try:
+                    result, _ = await judge.judge_with_quip(payload, len(order), quip=False, anchors=extras)
+                    break
+                except Exception:
+                    log.exception("evaluation batch failed (attempt %d)", attempt + 1)
+            else:
+                return
+        for i, mid in enumerate(order):
+            new[mid] = result[i].severity if i in result else 0
+        done += len(order)
+        if progress:
+            await progress(f"🧪 Evaluating: {done}/{len(posts)} posts…")
+
+    await asyncio.gather(*(one(c, ids) for c, ids in batches))
+    report = evaluate.metrics([wanted[m] for _, m in posts], new)
+    report.update(calls=len(batches), tokens=db.tokens_today() - tokens_before, stats=dict(PARSE_STATS))
+    log.info("evaluation: %s", {k: v for k, v in report.items() if k != "worst"})
+    return report
+
+
+def evaluation_embed(guild_id: int, r: dict) -> discord.Embed:
+    b, a = r["before"], r["after"]
+
+    def row(label, key, fmt="{}", total=None):
+        tot = f"/{a[total]}" if total else ""
+        return f"**{label}:** {fmt.format(b[key])}{tot} → **{fmt.format(a[key])}**{tot}"
+
+    embed = discord.Embed(
+        title=f"🧪 Evaluation, rubric v{scoring.RUBRIC_VERSION}",
+        description="\n".join([
+            f"{r['n']} reviewed posts, re-judged with the current prompt (nothing saved). Before → after:",
+            row("Average gap", "avg_gap", "{:.2f}"),
+            row("Within 1 point", "within1", "{:.0%}"),
+            row("False flags", "false_flags", total="clean_total"),
+            row("Safety posts still flagged", "safety_hits", total="safety_total"),
+            row("Scored 10", "tens"),
+            f"**Score spread now:** `{' '.join(str(x) for x in a['dist'])}` (0→10)",
+            f"Dropped for no quote: {r['stats'].get('no_evidence', 0)} · distress: {r['stats'].get('distress', 0)} · "
+            f"{r['calls']} calls · {r['tokens']:,} tokens",
+        ]),
+        color=0x5865F2,
+    )
+    for mid, should, got, safety in r["worst"]:
+        m = db.get_message(mid)
+        if m is None or got == should:
+            continue
+        embed.add_field(
+            name=f"Review {should} · now {got}" + (f" · {safety}" if safety else ""),
+            value=f"[{clip(discord.utils.escape_markdown(m['author_name'] + ': ' + m['content']), 140)}]"
+            f"({jump_url(guild_id, m['channel_id'], mid)})",
+            inline=False,
+        )
+    return embed
+
+
+@bot.hybrid_command(name="evaluate", help="Test the current prompt on the reviewed posts (DeepSeek, nothing saved; report in DMs).")
+@app_commands.describe(limit="Only the first N posts, for a quick cheap check (default: all)")
+@deployer_only()
+async def evaluate_(ctx: commands.Context, limit: int | None = None):
+    lock = guild_locks[ctx.guild.id]
+    if lock.locked():
+        await ctx.send("A sweep is already running in this server.", ephemeral=True)
+        return
+    try:
+        dm = await ctx.author.create_dm()
+        status = await dm.send("🧪 Starting evaluation…")
+    except discord.Forbidden:
+        await ctx.send("I can't DM you. Allow DMs from server members and try again.", ephemeral=True)
+        return
+    await ctx.send("🧪 Evaluation started. Results will arrive in your DMs.", ephemeral=True)
+    async with lock:
+        report = await run_evaluation(ctx.guild, Progress(status), limit)
+    if not report.get("n"):
+        await status.edit(content="None of the reviewed posts are in this server's database.")
+        return
+    await status.edit(content="🧪 Evaluation done.")
+    await dm.send(embed=evaluation_embed(ctx.guild.id, report))
+
+
+
+@bot.hybrid_command(help="Show the judge's server notes, or replace them by attaching a .md/.txt file.")
+@app_commands.describe(file="A text file to replace the notes with (leave empty to get the current notes)")
+@deployer_only()
+async def notes(ctx: commands.Context, file: discord.Attachment | None = None):
+    if file is None:
+        current = server_notes()
+        if not current:
+            await ctx.send("No server notes yet. Attach a .md or .txt file to `/notes` to add them.", ephemeral=True)
+            return
+        try:
+            await ctx.author.send("Current server notes:",
+                                  file=discord.File(io.BytesIO(current.encode()), filename="server_notes.md"))
+        except discord.Forbidden:
+            await ctx.send("I can't DM you. Allow DMs from server members and try again.", ephemeral=True)
+            return
+        await ctx.send("📬 Sent to your DMs.", ephemeral=True)
+        return
+    if file.size > SERVER_NOTES_MAX * 4:
+        await ctx.send(f"That file is too big (keep it under {SERVER_NOTES_MAX:,} characters).", ephemeral=True)
+        return
+    try:
+        text = (await file.read()).decode("utf-8")
+    except UnicodeDecodeError:
+        await ctx.send("That doesn't look like a UTF-8 text file.", ephemeral=True)
+        return
+    if len(text) > SERVER_NOTES_MAX:
+        await ctx.send(f"That's {len(text):,} characters; keep it under {SERVER_NOTES_MAX:,}.", ephemeral=True)
+        return
+    os.makedirs(os.path.dirname(SERVER_NOTES_PATH) or ".", exist_ok=True)
+    with open(SERVER_NOTES_PATH, "w", encoding="utf-8") as f:
+        f.write(text)
+    log.info("%s (%s) replaced the server notes (%d chars)", ctx.author, ctx.author.id, len(text))
+    await ctx.send(f"📝 Server notes updated ({len(text):,} characters). They apply to the next judging call; "
+                   "run `/evaluate` to see the effect.", ephemeral=True)
 
 
 @bot.hybrid_command(help="Have the analyst write up a classified dossier on someone's kimoi record.")

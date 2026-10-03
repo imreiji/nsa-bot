@@ -196,6 +196,11 @@ class DB:
             TIMELINE + " WHERE m.channel_id = ? AND m.id > ? ORDER BY m.id LIMIT ?", (channel_id, after_id, limit)
         ).fetchall()
 
+    def count_between(self, channel_id: int, first_id: int, last_id: int) -> int:
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE channel_id = ? AND id BETWEEN ? AND ?", (channel_id, first_id, last_id)
+        ).fetchone()[0]
+
     def get_message(self, message_id: int) -> sqlite3.Row | None:
         return self.conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
 
@@ -341,6 +346,7 @@ class DB:
         """Someone's latest real posts (not reactions), newest first, flagged or not."""
         return self.conn.execute(
             "SELECT content, severity FROM messages WHERE guild_id = ? AND author_id = ? AND scored = 1"
+            " AND (labels IS NULL OR labels NOT LIKE '%\"distress\": true%')"  # never roast someone's distress
             " ORDER BY id DESC LIMIT ?",
             (guild_id, user_id, limit),
         ).fetchall()
