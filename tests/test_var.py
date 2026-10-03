@@ -36,7 +36,13 @@ def env(monkeypatch):
         for entry in audit:
             yield entry
 
-    guild = NS(id=GUILD, me=NS(guild_permissions=NS(view_audit_log=False)), audit_logs=audit_logs,
+    async def no_wait(_):
+        pass
+
+    monkeypatch.setattr(b.asyncio, "sleep", no_wait)
+    b.audit_counts.clear()
+    b.unclaimed_mod_deletes.clear()
+    guild = NS(id=GUILD, me=NS(guild_permissions=NS(view_audit_log=True)), audit_logs=audit_logs,
                get_channel=lambda cid: report if cid == REPORT else None,
                get_channel_or_thread=lambda cid: source)
     monkeypatch.setattr(b.bot, "get_guild", lambda gid: guild if gid == GUILD else None)
@@ -97,14 +103,50 @@ def test_low_scores_stay_deleted(env):
     assert env.report.embeds == [] and b.db.get_message(4)["deleted"] == 1
 
 
-def test_mod_deletions_are_skipped(env, monkeypatch):
-    async def no_wait(_):
-        pass
+def entry(eid, count=1, age=timedelta(seconds=3), target=5, channel=CHAN):
+    return NS(id=eid, created_at=datetime.now(timezone.utc) - age, target=NS(id=target),
+              extra=NS(channel=NS(id=channel), count=count))
 
-    monkeypatch.setattr(b.asyncio, "sleep", no_wait)
-    env.guild.me.guild_permissions.view_audit_log = True
-    env.audit.append(NS(created_at=datetime.now(timezone.utc) - timedelta(seconds=3),
-                        target=NS(id=5), extra=NS(channel=NS(id=CHAN))))
+
+def test_mod_deletions_are_skipped(env):
+    env.audit.append(entry(1))
+    env.answer(9)
+    delete(4)
+    assert env.calls == [] and env.report.embeds == []
+
+
+def test_merged_mod_deletion_is_caught(env):
+    """Discord bumps the count on an old entry instead of adding a new one."""
+    env.audit.append(entry(1, count=1, age=timedelta(minutes=10)))
+    asyncio.run(b.refresh_mod_deletes(env.guild, prime=True))  # bot started; entry already there
+    env.audit[0] = entry(1, count=2, age=timedelta(minutes=10))  # same mod deletes again: count bump
+    env.answer(9)
+    delete(4)
+    assert env.calls == [] and env.report.embeds == []
+
+
+def test_old_unchanged_entries_dont_block_self_deletes(env):
+    env.audit.append(entry(1, count=3, age=timedelta(minutes=10)))
+    asyncio.run(b.refresh_mod_deletes(env.guild, prime=True))
+    env.answer(9)
+    delete(4)  # nothing new in the audit log: the author deleted it
+    assert len(env.report.embeds) == 1
+
+
+def test_each_mod_deletion_covers_one_delete(env):
+    """One mod deletion of yargas's message doesn't hide yargas's own delete a minute later."""
+    asyncio.run(b.refresh_mod_deletes(env.guild, prime=True))
+    env.audit.append(entry(1))
+    env.answer(9)
+    from nsabot.db import Message
+    b.db.save_batch(CHAN, 8, [Message(8, GUILD, CHAN, 5, "yargas", "another one")])
+    delete(8)  # the mod's deletion
+    delete(4)  # yargas deleting their own
+    assert len(env.calls) == 1 and len(env.report.embeds) == 1
+
+
+def test_without_audit_log_access_var_stays_quiet(env):
+    env.guild.me.guild_permissions.view_audit_log = False
     env.answer(9)
     delete(4)
     assert env.calls == [] and env.report.embeds == []

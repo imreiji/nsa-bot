@@ -579,20 +579,62 @@ def var_allowed(guild_id: int, user_id: int) -> bool:
     return True
 
 
-async def deleted_by_mod(guild: discord.Guild, channel_id: int, author_id: int) -> bool:
-    """Self-deletes leave no audit-log entry; a mod deleting someone else's message does."""
+audit_counts: dict[int, dict[int, int]] = {}  # guild -> {message-delete audit entry id: count}
+unclaimed_mod_deletes: defaultdict[int, defaultdict[tuple[int, int], list[float]]] = defaultdict(lambda: defaultdict(list))
+audit_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+warned_no_audit: set[int] = set()
+MOD_DELETE_TTL = 120  # seconds an unclaimed mod deletion stays attributable
+
+
+async def refresh_mod_deletes(guild: discord.Guild, prime: bool = False) -> None:
+    """Diff the recent message-delete audit entries against the last look.
+
+    Self-deletes never appear in the audit log; a mod deleting someone else's message does. Discord
+    merges repeated deletes (same mod, same author, same channel) into one entry and bumps its
+    count, so a deletion shows up either as a new entry or as a higher count on an old one. Each one
+    is recorded as an unclaimed (author, channel) mod deletion for the next matching delete event.
+    """
+    async with audit_locks[guild.id]:
+        entries = [e async for e in guild.audit_logs(limit=50, action=discord.AuditLogAction.message_delete)]
+        seen, now = audit_counts.get(guild.id), time.monotonic()
+        for e in entries if not prime else []:
+            count = getattr(e.extra, "count", None) or 1
+            if seen is None:  # first look since startup: only trust entries created just now
+                new = count if (discord.utils.utcnow() - e.created_at) < timedelta(minutes=2) else 0
+            else:
+                new = count - seen.get(e.id, 0)
+            key = (getattr(e.target, "id", None), getattr(getattr(e.extra, "channel", None), "id", None))
+            unclaimed_mod_deletes[guild.id][key] += [now] * max(0, new)
+        audit_counts[guild.id] = {e.id: getattr(e.extra, "count", None) or 1 for e in entries}
+        for key, times in list(unclaimed_mod_deletes[guild.id].items()):
+            times[:] = [t for t in times if now - t < MOD_DELETE_TTL]
+            if not times:
+                del unclaimed_mod_deletes[guild.id][key]
+
+
+def claim_mod_delete(guild_id: int, author_id: int, channel_id: int) -> bool:
+    times = unclaimed_mod_deletes[guild_id].get((author_id, channel_id))
+    if times:
+        times.pop(0)
+        return True
+    return False
+
+
+async def deleted_by_mod(guild: discord.Guild, channel_id: int, author_id: int) -> bool | None:
+    """True if a mod (or another bot) removed it, False if the author did, None if we can't tell."""
     if not guild.me.guild_permissions.view_audit_log:
-        return False  # can't tell, assume it was their own
-    await asyncio.sleep(2)  # the audit-log entry lands just after the delete event
+        if guild.id not in warned_no_audit:
+            warned_no_audit.add(guild.id)
+            log.warning("VAR needs View Audit Log in %s to tell self-deletes from mod deletes; skipping", guild.id)
+        return None
     try:
-        async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.message_delete):
-            if (discord.utils.utcnow() - entry.created_at) > timedelta(minutes=5):
-                break
-            channel = getattr(entry.extra, "channel", None)
-            if getattr(entry.target, "id", None) == author_id and getattr(channel, "id", None) == channel_id:
+        for wait in (2, 3):  # the audit entry lands a moment after the delete event
+            await asyncio.sleep(wait)
+            await refresh_mod_deletes(guild)
+            if claim_mod_delete(guild.id, author_id, channel_id):
                 return True
     except discord.HTTPException:
-        return False
+        return None
     return False
 
 
@@ -633,8 +675,10 @@ async def var_review(event: discord.RawMessageDeleteEvent):
         author_id = row["author_id"]
     else:
         return  # never saw it, or not worth reviewing
-    if await deleted_by_mod(guild, cid, author_id):
-        log.info("VAR: message %s was removed by a mod, not reviewing", mid)
+    by_mod = await deleted_by_mod(guild, cid, author_id)
+    if by_mod is not False:
+        if by_mod:
+            log.info("VAR: message %s was removed by a mod, not reviewing", mid)
         return
     if row is None:  # only in Discord's cache: store it so it has context and a place on the board
         db.save_message(to_row(cached, True, opted_out))
@@ -1079,6 +1123,12 @@ async def on_guild_join(guild: discord.Guild):
 async def on_ready():
     for guild in bot.guilds:
         await leave_if_unlisted(guild)
+    for guild in bot.guilds:  # baseline the audit log so VAR can spot merged mod deletions from the start
+        if guild.id in GUILD_IDS and guild.me.guild_permissions.view_audit_log:
+            try:
+                await refresh_mod_deletes(guild, prime=True)
+            except discord.HTTPException:
+                pass
     watching.clear()
     watching.update({g: c for g, c in db.watched().items() if g in GUILD_IDS})
     if not heartbeat.is_running():

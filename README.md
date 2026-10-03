@@ -109,8 +109,13 @@ report threshold) posts a **📺 VAR REVIEW** to the report channel. It also cou
 - Already-scored posts are aired without an API call; nothing is aired twice.
 - Low scores stay silent, and the judge is told to score 0 anything that looks deleted because it
   was private (addresses, phone numbers, real names, personal stuff).
-- Mod deletions are skipped when the bot has **View Audit Log**; without it, every single delete
-  is treated as a self-delete. Bulk purges are ignored.
+- Self-deletes never appear in the audit log, but a mod deleting someone else's message does, so
+  VAR treats a delete as the author's own only when no matching mod entry turns up. Discord merges
+  repeated deletes by the same mod (same author, same channel) into one entry and bumps its count,
+  so the bot tracks counts and treats a new entry *or* a higher count as a mod deletion. Each mod
+  deletion covers exactly one delete event. Bulk purges are ignored.
+- Needs **View Audit Log**. Without it VAR stays quiet, since it can't tell a self-delete from a mod
+  removing something.
 - At most `NSA_VAR_PER_USER_HOUR` (default 5) paid reviews per person per hour.
 - Turn off with `NSA_VAR=off`.
 
