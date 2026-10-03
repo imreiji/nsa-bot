@@ -13,11 +13,13 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from .db import DB, Message
-from .judge import Judge, build_payload
+from .judge import Judge, Truncated, build_payload
 
 log = logging.getLogger("nsabot")
 
 BATCH_SIZE = 40          # messages per DeepSeek call
+MIN_SPLIT = 5            # smallest batch worth splitting again when the model runs out of tokens
+MAX_FAILURES = 20        # consecutive failed calls before a sweep gives up (API down, out of credit)
 SAVE_EVERY = 500         # scraped messages per DB write / cursor checkpoint
 REPORT_MAX_PER_RUN = 20  # report-channel posts per sweep; the rest are summarised
 
@@ -51,6 +53,7 @@ judge = Judge(
     base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
     thinking=os.getenv("DEEPSEEK_THINKING", "on").lower() not in ("off", "0", "false", "disabled"),
     effort=os.getenv("DEEPSEEK_REASONING_EFFORT") or None,
+    thinking_tokens=int(os.getenv("DEEPSEEK_THINKING_TOKENS", "32000")),
     db=db,
 )
 
@@ -185,11 +188,11 @@ class Progress:
     def __init__(self, message: discord.Message | None = None, every: float = 10.0):
         self.message = message
         self.every = every
-        self.last = 0.0
+        self.last: float | None = None
 
     async def __call__(self, text: str, force: bool = False) -> None:
         now = time.monotonic()
-        if not force and now - self.last < self.every:
+        if not force and self.last is not None and now - self.last < self.every:
             return
         self.last = now
         log.info("progress: %s", text)
@@ -262,10 +265,23 @@ async def judge_backlog(guild: discord.Guild, progress=None) -> tuple[int, int]:
             t0 = time.monotonic()
             try:
                 result = await judge.judge(payload, len(order))
+            except Truncated:
+                if len(ids) >= MIN_SPLIT * 2:  # too much to think about at once: retry as two halves
+                    half = len(ids) // 2
+                    log.warning("batch of %d ran out of tokens, retrying as %d + %d", len(ids), half, len(ids) - half)
+                    batches.put_nowait((channel_id, ids[:half]))
+                    batches.put_nowait((channel_id, ids[half:]))
+                    continue
+                log.error("batch of %d ran out of tokens even after splitting; leaving it queued", len(ids))
+                failed = True
             except Exception:
                 log.exception("judge batch failed; leaving %d messages queued", len(order))
+                failed = True
+            else:
+                failed = False
+            if failed:
                 failed_in_a_row += 1
-                if failed_in_a_row >= max(3, CONCURRENCY):  # the API is down; stop instead of burning the queue
+                if failed_in_a_row >= MAX_FAILURES:  # API down or out of credit: stop instead of burning the queue
                     log.error("%d batches failed in a row, stopping this sweep", failed_in_a_row)
                     dead.set()
                 continue

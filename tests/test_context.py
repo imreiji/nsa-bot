@@ -148,6 +148,27 @@ def test_worker_pool_stops_when_api_is_down(monkeypatch):
 
     b.judge.client.chat.completions.create = broken
     _seed(40 * 50)  # 50 batches
+    monkeypatch.setattr(b, "MAX_FAILURES", 5)
     assert asyncio.run(b.judge_backlog(_guild())) == (0, 0)
-    assert calls <= 6  # gave up after a few failures instead of trying all 50
+    assert calls < b.MAX_FAILURES + 3  # gave up instead of trying all 50
     assert b.db.count_unjudged(GUILD) == 2000  # nothing lost, all still queued
+
+
+def test_batches_that_run_out_of_tokens_are_split(monkeypatch):
+    monkeypatch.setattr(b, "CONCURRENCY", 4)
+    sizes = []
+
+    async def fake_create(**kwargs):
+        payload = json.loads(kwargs["messages"][1]["content"])
+        n = sum("i" in m for m in payload["messages"])
+        sizes.append(n)
+        if n > 10:  # "thinks too long" on anything bigger than 10 posts
+            return NS(usage=None, choices=[NS(finish_reason="length", message=NS(content=""))])
+        return NS(usage=None, choices=[NS(finish_reason="stop", message=NS(content='{"flagged": [{"i": 0, "severity": 8}]}'))])
+
+    b.judge.client.chat.completions.create = fake_create
+    _seed(40 * 2)  # 2 batches of 40
+    judged, flagged = asyncio.run(b.judge_backlog(_guild()))
+    assert judged == 80 and flagged == 8  # 40 -> 20 -> 10: eight batches of 10 succeed
+    assert sorted(set(sizes)) == [10, 20, 40]
+    assert b.db.count_unjudged(GUILD) == 0

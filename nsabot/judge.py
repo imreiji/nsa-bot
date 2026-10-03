@@ -14,7 +14,6 @@ MAX_CHARS = 800          # per scored message sent to the model
 CONTEXT_CHARS = 300      # per context-only message
 REPLY_CHARS = 200        # per quoted reply target
 EXTRAS_CHARS = 300       # attachments / embeds description
-THINKING_TOKENS = 16000  # extra output room for reasoning when thinking mode is on
 
 JUDGE_PROMPT = """You are the NSA (Neckbeard Surveillance Agency), an analyst auditing a Discord server for
 "kimoi" (キモい) posts: cringe, creepy or deeply unhinged otaku behaviour.
@@ -90,9 +89,14 @@ Be funny and roast their otaku behaviour, but do not insult appearance,
 race, gender, or anything other than what they posted. Plain text, no markdown headers."""
 
 
+class Truncated(Exception):
+    """The model used its whole output budget (usually thinking) before finishing the answer."""
+
+
 class Judge:
     def __init__(
-        self, api_key: str, model: str, base_url: str, db: DB, thinking: bool = True, effort: str | None = None
+        self, api_key: str, model: str, base_url: str, db: DB, thinking: bool = True, effort: str | None = None,
+        thinking_tokens: int = 32000,
     ):
         # Bounded retries/timeouts so a flaky API can't stall a sweep or multiply spend.
         # Thinking at high effort can take a few minutes on a full batch.
@@ -101,6 +105,7 @@ class Judge:
         self.db = db
         self.thinking = thinking
         self.effort = effort
+        self.thinking_tokens = thinking_tokens  # output room for reasoning on top of the answer
 
     async def _complete(self, *, max_tokens: int, temperature: float, **kwargs):
         """max_tokens is the answer budget; thinking gets extra room on top since it may count against it."""
@@ -108,14 +113,12 @@ class Judge:
         if self.thinking:
             if self.effort:
                 extra["reasoning_effort"] = self.effort
-            kwargs["max_tokens"] = max_tokens + THINKING_TOKENS  # temperature is ignored in thinking mode
+            kwargs["max_tokens"] = max_tokens + self.thinking_tokens  # temperature is ignored in thinking mode
         else:
             kwargs.update(max_tokens=max_tokens, temperature=temperature)
         resp = await self.client.chat.completions.create(model=self.model, extra_body=extra, **kwargs)
         if resp.usage:
             self.db.add_tokens(resp.usage.total_tokens)  # informational, shown by !usage
-        if resp.choices and resp.choices[0].finish_reason == "length":
-            log.warning("DeepSeek hit max_tokens; the answer may be cut off")
         return resp
 
     async def judge(self, payload: dict, n: int) -> dict[int, tuple[int, str]]:
@@ -133,6 +136,8 @@ class Judge:
             temperature=0.2,
             max_tokens=2000,
         )
+        if resp.choices[0].finish_reason == "length":
+            raise Truncated(f"ran out of output tokens on {n} posts")
         return parse_verdicts(resp.choices[0].message.content or "", n)
 
     async def roast(self, name: str, stats: str, posts: list[tuple[int, str, str]]) -> str:
