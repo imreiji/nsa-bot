@@ -43,7 +43,7 @@ def test_parse_verdicts_clamps_and_drops_garbage():
         {"i": "x", "severity": 5},
         {"severity": 5},
     ]})
-    assert parse_verdicts(raw, 3) == {0: (10, "uooh")}
+    assert parse_verdicts(raw, 3) == {0: (10, "uooh", None)}
     with pytest.raises(json.JSONDecodeError):
         parse_verdicts("not json", 3)
 
@@ -86,7 +86,7 @@ def test_judge_records_usage():
 
     judge.client.chat.completions.create = fake_create
     payload = {"channel": {"name": "#x"}, "messages": [{"i": 0, "author": "a", "text": "uooh"}]}
-    assert asyncio.run(judge.judge(payload, 1)) == {0: (6, "")}
+    assert asyncio.run(judge.judge(payload, 1)) == {0: (6, "", None)}
     asyncio.run(judge.judge(payload, 1))
     assert db.tokens_today() == 1200
 
@@ -136,7 +136,7 @@ def test_non_thinking_mode_request():
 
 def test_parse_verdicts_tolerates_fences():
     raw = 'Here you go:\n```json\n{"flagged": [{"i": 0, "severity": 4, "reason": "unicorn"}]}\n```'
-    assert parse_verdicts(raw, 1) == {0: (4, "unicorn")}
+    assert parse_verdicts(raw, 1) == {0: (4, "unicorn", None)}
 
 
 def test_progress_throttles_edits():

@@ -26,6 +26,10 @@ commands are registered only in the servers in `NSA_GUILD_IDS` when the bot star
 | `/watch #channel` / `/unwatch` | admin UIDs | Start / stop live surveillance and set the report channel |
 | `/scan [channel]` / `/scanall` | admin UIDs | Judge history of a channel, voice chat or thread (default: current) / of everything |
 | `/usage` | admin UIDs | DeepSeek tokens used today, queue size |
+| `/calibrate` / `/calibration` | admin UIDs | Score posts yourself in DMs / DM report comparing the formula with your scores |
+| `/rescore` | admin UIDs | Re-judge posts scored under an older rubric (re-runs DeepSeek; old history isn't re-posted) |
+| `/model` | anyone | Which DeepSeek model and settings the bot uses |
+| `/scoring` | anyone | The scoring formula, thresholds and calibration accuracy |
 | `/dossier [@user]` | everyone (`NSA_DOSSIER_PUBLIC`, 3/hour each; admins unlimited) | Deadpan classified report on their kimoi record |
 | `/roast [@user]` | admin UIDs (everyone with `NSA_ROAST_PUBLIC=on`, 3/hour each) | Comedy roast built from their recent posts, kimoi stats and worst posts |
 | `/kimoiboard` | anyone | Top 10 leaderboard |
@@ -129,10 +133,30 @@ every `NSA_QUIP_COOLDOWN_MINUTES` (default 30). Turn off with `NSA_QUIPS=off`. N
 
 ## Scoring
 
-DeepSeek reads messages in batches of up to 40 scored posts per channel and gives each a severity
-of 0-10. A user's score is **Σ severity² / 10**: every kimoi post counts, but one 10/10 post (10 pts)
-beats ten 3/10 posts (9 pts). The board also shows hit rate (kimoi posts ÷ judged posts) and average
-severity. The rubric is in `nsabot/judge.py` (`JUDGE_PROMPT`); edit it to fit your server.
+DeepSeek doesn't pick numbers. It **labels** each kimoi post, and a fixed formula in
+`nsabot/scoring.py` turns the labels into a score (`/scoring` shows it in Discord):
+
+- **behaviours**: worship 2, spending 4, gachikoi 4, horny 5, unicorn 6, life impact 7,
+  bodily/servitude 7, stalking/harassment 9 (start from the highest)
+- **target**: real person +1 · **intensity**: passing −1, graphic +1 · **sincerity**: obvious bit −2,
+  sincere +1 · **doubling down** +1 · **two or more behaviours** +1
+- kept between 1 and 10; horny or bodily/servitude about a minor character is always 10; only
+  pointing at someone else's kimoi is 0
+
+Labels are stored with every verdict, so changing a weight re-applies to old posts on the next start
+without any API calls. Changing the labels or their definitions in the prompt means bumping
+`RUBRIC_VERSION` and running `/rescore`.
+
+A user's leaderboard score is **Σ severity² / 10**, so one 10/10 post outweighs ten 3/10 posts.
+
+### Calibration
+
+`/calibrate` (admins) sends you posts **in DMs** with 0-10 buttons: alternately ones the bot flagged
+and random ones. You answer first, then see the bot's score and labels. Your scores:
+
+- become examples in the judge's prompt (up to 2 per score band, where the formula agreed with you)
+- power `/calibration`, a DM report of how far the formula lands from your scores on average, whether
+  it's too harsh or too soft, and its worst misses with their labels, so you can see which weight to change
 
 ## Setup
 

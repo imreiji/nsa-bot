@@ -2,6 +2,7 @@
 
 import asyncio
 import itertools
+import json
 import logging
 import os
 import re
@@ -15,8 +16,9 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
+from . import scoring
 from .db import DB, Message
-from .judge import VAR_NOTE, Judge, Truncated, build_payload, message_time
+from .judge import VAR_NOTE, Judge, Truncated, Verdict, anchors_text, build_payload, message_time
 
 log = logging.getLogger("nsabot")
 
@@ -269,6 +271,35 @@ async def post_quip(guild: discord.Guild, channel_id: int, last_message_id: int,
         log.warning("couldn't post a quip in %s", channel_id)
 
 
+anchor_cache: dict[int, tuple[float, str]] = {}
+
+
+def tags(labels_json: str | None) -> str:
+    return scoring.describe(json.loads(labels_json)) if labels_json else ""
+
+
+def anchors_for(guild_id: int) -> str:
+    """Up to 2 admin-scored posts per score band where the formula agrees (within 1), for the prompt."""
+    cached = anchor_cache.get(guild_id)
+    if cached and time.monotonic() - cached[0] < 600:
+        return cached[1]
+    bands: dict[int, list] = {0: [], 1: [], 4: [], 7: [], 9: []}
+    for r in db.gold_rows(guild_id):
+        if r["rubric_version"] != scoring.RUBRIC_VERSION:
+            continue  # judged under an older rubric: its labels don't apply
+        labels = json.loads(r["labels"]) if r["labels"] else None
+        bot_score = scoring.score(labels) if labels else 0
+        admin = r["admin_score"]
+        if abs(bot_score - admin) > 1:
+            continue
+        band = 0 if admin == 0 else 1 if admin <= 3 else 4 if admin <= 6 else 7 if admin <= 8 else 9
+        if len(bands[band]) < 2:
+            bands[band].append((r["content"], labels, admin))
+    text = anchors_text([example for band in bands.values() for example in band])
+    anchor_cache[guild_id] = (time.monotonic(), text)
+    return text
+
+
 # --- pipeline: scrape -> judge -> report ------------------------------------
 
 class Progress:
@@ -359,7 +390,7 @@ async def judge_backlog(guild: discord.Guild, progress=None) -> tuple[int, int]:
             t0 = time.monotonic()
             quip = quip_allowed(guild.id)
             try:
-                result, joke = await judge.judge_with_quip(payload, len(order), quip)
+                result, joke = await judge.judge_with_quip(payload, len(order), quip, anchors=anchors_for(guild.id))
             except Truncated:
                 if len(ids) >= MIN_SPLIT * 2:  # too much to think about at once: retry as two halves
                     half = len(ids) // 2
@@ -383,7 +414,8 @@ async def judge_backlog(guild: discord.Guild, progress=None) -> tuple[int, int]:
             failed_in_a_row = 0
             if joke:
                 await post_quip(guild, channel_id, ids[-1], joke)
-            db.save_verdicts([(mid, *result.get(i, (0, None))) for i, mid in enumerate(order)])
+            db.save_verdicts([(mid, *result.get(i, Verdict(0, None))) for i, mid in enumerate(order)],
+                             scoring.RUBRIC_VERSION)
             judged += len(order)
             flagged += len(result)
             log.info("judged %d posts in %s: %d flagged (%.0fs)",
@@ -411,6 +443,8 @@ async def report(guild: discord.Guild) -> int:
             color=0xE91E63 if r["severity"] < 8 else 0x8B0000,
         )
         embed.add_field(name="Analyst note", value=clip(r["reason"] or "no comment", 200), inline=False)
+        if profile := tags(r["labels"]):
+            embed.add_field(name="Profile", value=profile, inline=False)
         embed.add_field(name="Location", value=f"<#{r['channel_id']}>", inline=False)
         await channel.send(embed=embed)
     if len(rows) > REPORT_MAX_PER_RUN:
@@ -652,6 +686,8 @@ async def post_var(guild: discord.Guild, row, severity: int, reason: str | None)
     )
     embed.add_field(name="Decision", value=f"**{severity}/10 kimoi.** Deletion overturned. The post stands.", inline=False)
     embed.add_field(name="Analyst note", value=clip(reason or "no comment", 200), inline=False)
+    if profile := tags(row["labels"]):
+        embed.add_field(name="Profile", value=profile, inline=False)
     embed.add_field(name="Scene", value=f"{scene}<#{row['channel_id']}>", inline=False)
     await channel.send(embed=embed)
 
@@ -694,12 +730,14 @@ async def var_review(event: discord.RawMessageDeleteEvent):
         timeline = db.timeline(cid, mid, mid, before=CONTEXT_MESSAGES) + db.timeline_after(cid, mid, VAR_AFTER)
         payload, _ = build_payload(channel_info(guild, cid), timeline, [mid])
         try:
-            result, _ = await judge.judge_with_quip(payload, 1, quip=False, note=VAR_NOTE)
+            result, _ = await judge.judge_with_quip(payload, 1, quip=False, note=VAR_NOTE, anchors=anchors_for(gid))
         except Exception:
             log.exception("VAR review of %s failed", mid)
             return
-        severity, reason = result.get(0, (0, None))
-        db.save_verdicts([(mid, severity, reason)])
+        verdict = result.get(0, Verdict(0, None))
+        severity, reason = verdict.severity, verdict.reason
+        db.save_verdicts([(mid, *verdict)], scoring.RUBRIC_VERSION)
+        row = db.get_message(mid)
     log.info("VAR: %s deleted %s, %d/10", row["author_name"], mid, severity)
     if severity >= VAR_MIN_SEVERITY:
         try:
@@ -801,6 +839,215 @@ async def usage(ctx: commands.Context):
     )
 
 
+# --- model / scoring info ---------------------------------------------------
+
+def on_off(flag: bool) -> str:
+    return "on" if flag else "off"
+
+
+@bot.hybrid_command(help="Which DeepSeek model the bot uses, and how.")
+async def model(ctx: commands.Context):
+    effort = judge.effort or "default (high)"
+    embed = discord.Embed(title="🧠 Analyst hardware", color=0x5865F2)
+    embed.add_field(name="Model", value=f"`{judge.model}` via `{judge.client.base_url.host}`", inline=False)
+    embed.add_field(
+        name="Scoring posts",
+        value=f"thinking {on_off(judge.thinking)}"
+        + (f" · effort {effort} · up to {judge.thinking_tokens:,} thinking tokens" if judge.thinking else "")
+        + f"\n{BATCH_SIZE} posts per call · {CONCURRENCY} calls at once · {CONTEXT_MESSAGES} messages of context",
+        inline=False,
+    )
+    embed.add_field(name="Chat replies", value=f"thinking {on_off(RESPOND_THINKING)} · {RESPOND_CONTEXT} messages of context",
+                    inline=False)
+    embed.add_field(name="Roasts and dossiers", value=f"thinking {on_off(judge.thinking)}", inline=False)
+    await ctx.send(embed=embed)
+
+
+def calibration_stats(guild_id: int) -> dict:
+    """How far the formula lands from the admins' own scores (current rubric only)."""
+    diffs, outdated = [], 0
+    for r in db.gold_rows(guild_id):
+        if r["rubric_version"] != scoring.RUBRIC_VERSION:
+            outdated += 1
+            continue
+        labels = json.loads(r["labels"]) if r["labels"] else None
+        bot_score = scoring.score(labels) if labels else 0
+        diffs.append((bot_score - r["admin_score"], r, bot_score, labels))
+    n = len(diffs)
+    return {
+        "n": n,
+        "outdated": outdated,
+        "mae": sum(abs(d) for d, *_ in diffs) / n if n else 0.0,
+        "bias": sum(d for d, *_ in diffs) / n if n else 0.0,
+        "within1": sum(abs(d) <= 1 for d, *_ in diffs) / n if n else 0.0,
+        "worst": sorted(diffs, key=lambda x: -abs(x[0]))[:5],
+    }
+
+
+@bot.hybrid_command(name="scoring", help="How posts are scored: the formula behind every kimoi score.")
+async def scoring_(ctx: commands.Context):
+    embed = discord.Embed(
+        title=f"📐 Kimoi scoring (rubric v{scoring.RUBRIC_VERSION})",
+        description="DeepSeek labels each kimoi post; this formula turns the labels into a score.\n\n"
+        + "\n".join(scoring.formula_lines()),
+        color=0x5865F2,
+    )
+    stats = calibration_stats(ctx.guild.id)
+    if stats["n"]:
+        embed.add_field(
+            name="Calibration",
+            value=f"{stats['n']} admin-scored posts · off by {stats['mae']:.1f} on average · "
+            f"{stats['within1']:.0%} within 1 point",
+            inline=False,
+        )
+    embed.set_footer(text=f"Report threshold {REPORT_MIN_SEVERITY}/10 · VAR threshold {VAR_MIN_SEVERITY}/10")
+    await ctx.send(embed=embed)
+
+
+
+# --- calibration (admins, in DMs) --------------------------------------------
+
+class CalibrationView(discord.ui.View):
+    """0-10 buttons for one post. Answering saves the admin's score, reveals the bot's and moves on."""
+
+    def __init__(self, admin_id: int, guild_id: int, row, done: int):
+        super().__init__(timeout=900)
+        self.admin_id, self.guild_id, self.row, self.done = admin_id, guild_id, row, done
+        for n in range(11):
+            button = discord.ui.Button(label=str(n), row=0 if n < 5 else 1 if n < 10 else 2,
+                                       style=discord.ButtonStyle.danger if n >= 7 else discord.ButtonStyle.secondary)
+            button.callback = self._scorer(n)
+            self.add_item(button)
+        for label, handler in (("Skip", self._skip), ("Stop", self._stop)):
+            button = discord.ui.Button(label=label, row=2, style=discord.ButtonStyle.primary)
+            button.callback = handler
+            self.add_item(button)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        return interaction.user.id == self.admin_id
+
+    def _close(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        self.stop()
+
+    def _scorer(self, n: int):
+        async def callback(interaction: discord.Interaction):
+            db.save_gold(self.guild_id, self.row["id"], self.admin_id, n)
+            anchor_cache.pop(self.guild_id, None)
+            labels = json.loads(self.row["labels"]) if self.row["labels"] else None
+            bot_score = scoring.score(labels) if labels else (self.row["severity"] or 0)
+            embed = interaction.message.embeds[0]
+            embed.add_field(name="You", value=f"**{n}**/10", inline=True)
+            embed.add_field(name="Bot", value=f"**{bot_score}**/10" + (f" · {scoring.describe(labels)}" if labels else ""),
+                            inline=True)
+            self._close()
+            await interaction.response.edit_message(embed=embed, view=self)
+            await send_calibration(interaction.channel, self.admin_id, self.guild_id, self.done + 1)
+        return callback
+
+    async def _skip(self, interaction: discord.Interaction):
+        self._close()
+        await interaction.response.edit_message(content="Skipped.", view=self)
+        await send_calibration(interaction.channel, self.admin_id, self.guild_id, self.done)
+
+    async def _stop(self, interaction: discord.Interaction):
+        self._close()
+        await interaction.response.edit_message(
+            content=f"Session over: {self.done} scored. `/calibration` shows how the formula compares.", view=self)
+
+
+async def send_calibration(channel, admin_id: int, guild_id: int, done: int) -> None:
+    """Send the next post to score: alternately one the bot flagged and a random one."""
+    row = db.calibration_sample(guild_id, flagged=done % 2 == 0) or db.calibration_sample(guild_id, flagged=False)
+    if row is None:
+        await channel.send(f"Nothing left to score. {done} done this session. `/calibration` for the report.")
+        return
+    before = [r for r in db.timeline(row["channel_id"], row["id"], row["id"], before=3) if r["id"] != row["id"]]
+    context = "\n".join(f"-# {clip(r['author_name'], 30)}: {clip(r['content'], 120)}" for r in before)
+    embed = discord.Embed(
+        title=f"Calibration #{done + 1}: how kimoi is this, 0-10?",
+        description=(context + "\n" if context else "")
+        + f"**{discord.utils.escape_markdown(row['author_name'])}**: {clip(discord.utils.escape_markdown(row['content']), 900)}",
+        url=jump_url(guild_id, row["channel_id"], row["id"]),
+        color=0x5865F2,
+    )
+    embed.set_footer(text="0 = normal fandom · 10 = call the actual NSA · the bot's score is shown after you answer")
+    await channel.send(embed=embed, view=CalibrationView(admin_id, guild_id, row, done))
+
+
+@bot.hybrid_command(help="Score posts yourself in DMs, so the bot can be checked and tuned against you.")
+@deployer_only()
+async def calibrate(ctx: commands.Context):
+    try:
+        dm = await ctx.author.create_dm()
+        await dm.send(f"🎯 Calibration for **{ctx.guild.name}**. Score each post 0-10 by your own gut; "
+                      "Stop whenever you like. Your scores tune the bot's examples and power `/calibration`.")
+        await send_calibration(dm, ctx.author.id, ctx.guild.id, 0)
+    except discord.Forbidden:
+        await ctx.send("I can't DM you. Allow DMs from server members and try again.", ephemeral=True)
+        return
+    await ctx.send("📬 Check your DMs.", ephemeral=True)
+
+
+@bot.hybrid_command(help="How the scoring formula compares with the admins' own scores (sent to your DMs).")
+@deployer_only()
+async def calibration(ctx: commands.Context):
+    stats = calibration_stats(ctx.guild.id)
+    if not stats["n"]:
+        note = f" ({stats['outdated']} are from an older rubric; run `/rescore`)" if stats["outdated"] else ""
+        await ctx.send(f"No admin scores to compare yet{note}. Start with `/calibrate`.", ephemeral=True)
+        return
+    direction = "too harsh" if stats["bias"] > 0.25 else "too soft" if stats["bias"] < -0.25 else "about right"
+    embed = discord.Embed(
+        title="🎯 Calibration report",
+        description=f"**{stats['n']}** admin-scored posts\n"
+        f"Off by **{stats['mae']:.1f}** points on average · **{stats['within1']:.0%}** within 1 point\n"
+        f"Overall the bot is **{direction}** ({stats['bias']:+.1f})"
+        + (f"\n{stats['outdated']} more were scored under an older rubric (`/rescore` to include them)"
+           if stats["outdated"] else ""),
+        color=0x5865F2,
+    )
+    for diff, r, bot_score, labels in stats["worst"]:
+        if diff == 0:
+            break
+        embed.add_field(
+            name=f"You {r['admin_score']} · bot {bot_score}" + (f" · {scoring.describe(labels)}" if labels else " · not flagged"),
+            value=f"[{clip(discord.utils.escape_markdown(r['content']), 150)}]({jump_url(ctx.guild.id, r['channel_id'], r['id'])})",
+            inline=False,
+        )
+    try:
+        await ctx.author.send(embed=embed)
+    except discord.Forbidden:
+        await ctx.send("I can't DM you. Allow DMs from server members and try again.", ephemeral=True)
+        return
+    await ctx.send("📬 Report sent to your DMs.", ephemeral=True)
+
+
+@bot.hybrid_command(help="Re-score posts judged under an older rubric (re-runs DeepSeek on them).")
+@deployer_only()
+async def rescore(ctx: commands.Context):
+    outdated = db.count_outdated(ctx.guild.id, scoring.RUBRIC_VERSION)
+    if not outdated:
+        await ctx.send(f"Everything is already on rubric v{scoring.RUBRIC_VERSION}.", ephemeral=True)
+        return
+    lock = guild_locks[ctx.guild.id]
+    if lock.locked():
+        await ctx.send("A sweep is already running in this server.", ephemeral=True)
+        return
+    async with lock:
+        if ctx.interaction:
+            await ctx.send("🔁 Rescore started. Progress below.", ephemeral=True)
+        status = await ctx.channel.send(f"🔁 Re-scoring {outdated:,} posts under rubric v{scoring.RUBRIC_VERSION}…")
+        db.queue_rescore(ctx.guild.id, scoring.RUBRIC_VERSION)
+        judged, flagged = await judge_backlog(ctx.guild, Progress(status))
+        left = db.count_unjudged(ctx.guild.id)
+        log.info("rescore complete: %d judged, %d flagged, %d left", judged, flagged, left)
+        await status.edit(content=f"✅ Rescore done: {judged:,} posts re-scored, {flagged:,} kimoi."
+                          + (f" {left:,} still queued (API errors), run `/rescore` or `/scan` again." if left else "")
+                          + " Old history isn't re-posted to the report channel.")
+
+
 @bot.hybrid_command(help="Have the analyst write up a classified dossier on someone's kimoi record.")
 @app_commands.describe(member="Who to investigate (leave empty for yourself)")
 @public_ai("DOSSIER_PUBLIC")
@@ -887,7 +1134,7 @@ def kimoi_page(guild_id: int, user: discord.Member | None, page: int) -> tuple[d
         lines.append(
             f"`#{n}` **{r['severity']}/10**{who} · {where}\n"
             f"> {clip(discord.utils.escape_markdown(r['content']), 160)}\n"
-            f"*{clip(r['reason'] or 'no comment', 90)}*"
+            f"*{clip(r['reason'] or 'no comment', 90)}*" + (f" · `{tags(r['labels'])}`" if r["labels"] else "")
         )
     embed = discord.Embed(
         title=title,
@@ -986,7 +1233,8 @@ async def kimoi(ctx: commands.Context, member: Suspect = None):
     for p in db.worst_posts(ctx.guild.id, member.id):
         link = jump_url(ctx.guild.id, p["channel_id"], p["id"])
         embed.add_field(
-            name=f"{p['severity']}/10 — {clip(p['reason'] or 'no comment', 80)}",
+            name=f"{p['severity']}/10 — {clip(p['reason'] or 'no comment', 80)}"
+            + (f" · {tags(p['labels'])}" if p["labels"] else ""),
             value=f"[{clip(discord.utils.escape_markdown(p['content']), 150)}]({link})",
             inline=False,
         )
@@ -1138,6 +1386,8 @@ async def on_ready():
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    if changed := db.recompute_scores(scoring.score):  # formula weights changed since last run
+        log.info("re-applied the scoring formula: %d scores changed", changed)
     if not ADMIN_IDS or not GUILD_IDS:
         raise SystemExit("NSA_ADMIN_IDS and NSA_GUILD_IDS must both be set (comma-separated Discord IDs).")
     bot.run(os.environ["DISCORD_TOKEN"], log_handler=None)

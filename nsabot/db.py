@@ -1,5 +1,6 @@
 """SQLite storage for scraped messages, DeepSeek verdicts, scan cursors and opt-outs."""
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from dataclasses import dataclass
@@ -21,7 +22,9 @@ CREATE TABLE IF NOT EXISTS messages (
     reply_author    TEXT,
     reply_text      TEXT,
     extras      TEXT,                  -- attachments, stickers, embeds, forwards, as text
-    deleted     INTEGER NOT NULL DEFAULT 0  -- deleted by its author (VAR reviewed)
+    deleted     INTEGER NOT NULL DEFAULT 0, -- deleted by its author (VAR reviewed)
+    labels      TEXT,                  -- JSON labels from the judge (formula scoring)
+    rubric_version INTEGER             -- rubric the verdict was made under (NULL = v1, number scores)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_unjudged ON messages (guild_id, severity);
 CREATE INDEX IF NOT EXISTS idx_messages_author ON messages (guild_id, author_id);
@@ -40,6 +43,13 @@ CREATE TABLE IF NOT EXISTS watch (
 CREATE TABLE IF NOT EXISTS usage (
     day    TEXT PRIMARY KEY,           -- UTC date
     tokens INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gold (
+    message_id INTEGER PRIMARY KEY,    -- an admin's own 0-10 score for a post (/calibrate)
+    guild_id   INTEGER NOT NULL,
+    admin_id   INTEGER NOT NULL,
+    score      INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS optouts (
@@ -63,6 +73,8 @@ MIGRATIONS = {
     "reply_text": "TEXT",
     "extras": "TEXT",
     "deleted": "INTEGER NOT NULL DEFAULT 0",
+    "labels": "TEXT",
+    "rubric_version": "INTEGER",
 }
 
 INSERT = (
@@ -186,17 +198,76 @@ class DB:
         with self.conn:
             self.conn.execute("UPDATE messages SET deleted = 1 WHERE id = ?", (message_id,))
 
-    def save_verdicts(self, verdicts: list[tuple[int, int, str | None]]) -> None:
-        """verdicts: (message_id, severity, reason)."""
+    def save_verdicts(self, verdicts: list[tuple], rubric_version: int | None = None) -> None:
+        """verdicts: (message_id, severity, reason) or (message_id, severity, reason, labels dict)."""
+        rows = []
+        for v in verdicts:
+            mid, sev, reason, labels = (*v, None)[:4]
+            rows.append((sev, reason, json.dumps(labels, ensure_ascii=False) if labels else None, rubric_version, mid))
         with self.conn:
             self.conn.executemany(
-                "UPDATE messages SET severity = ?, reason = ? WHERE id = ?",
-                [(sev, reason, mid) for mid, sev, reason in verdicts],
+                "UPDATE messages SET severity = ?, reason = ?, labels = ?, rubric_version = ? WHERE id = ?", rows
             )
+
+    # --- formula scoring / calibration --------------------------------------
+
+    def recompute_scores(self, score_fn) -> int:
+        """Re-apply the formula to stored labels (after weights change). Returns how many changed."""
+        changed = []
+        for r in self.conn.execute("SELECT id, severity, labels FROM messages WHERE labels IS NOT NULL"):
+            new = score_fn(json.loads(r["labels"]))
+            if new != r["severity"]:
+                changed.append((new, r["id"]))
+        with self.conn:
+            self.conn.executemany("UPDATE messages SET severity = ? WHERE id = ?", changed)
+        return len(changed)
+
+    def count_outdated(self, guild_id: int, version: int) -> int:
+        return self.conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE guild_id = ? AND scored = 1 AND severity IS NOT NULL"
+            " AND COALESCE(rubric_version, 1) < ?",
+            (guild_id, version),
+        ).fetchone()[0]
+
+    def queue_rescore(self, guild_id: int, version: int) -> int:
+        """Send posts judged under an older rubric back to the queue. Old history isn't re-reported."""
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE messages SET severity = NULL, reason = NULL, labels = NULL,"
+                " reported = CASE WHEN deleted = 1 THEN reported ELSE 1 END"
+                " WHERE guild_id = ? AND scored = 1 AND severity IS NOT NULL AND COALESCE(rubric_version, 1) < ?",
+                (guild_id, version),
+            )
+        return cur.rowcount
+
+    def calibration_sample(self, guild_id: int, flagged: bool) -> sqlite3.Row | None:
+        """A random judged post no admin has scored yet: a flagged one, or any one."""
+        return self.conn.execute(
+            "SELECT * FROM messages WHERE guild_id = ? AND scored = 1 AND severity IS NOT NULL AND deleted = 0"
+            + (" AND severity > 0" if flagged else "")
+            + " AND id NOT IN (SELECT message_id FROM gold) ORDER BY RANDOM() LIMIT 1",
+            (guild_id,),
+        ).fetchone()
+
+    def save_gold(self, guild_id: int, message_id: int, admin_id: int, score: int) -> None:
+        with self.conn:
+            self.conn.execute(
+                "INSERT INTO gold VALUES (?, ?, ?, ?) ON CONFLICT (message_id)"
+                " DO UPDATE SET admin_id = excluded.admin_id, score = excluded.score",
+                (message_id, guild_id, admin_id, score),
+            )
+
+    def gold_rows(self, guild_id: int) -> list[sqlite3.Row]:
+        """Admin scores joined with the bot's current verdicts for the same posts."""
+        return self.conn.execute(
+            "SELECT g.score AS admin_score, m.id, m.channel_id, m.content, m.severity, m.labels, m.rubric_version"
+            " FROM gold g JOIN messages m ON m.id = g.message_id WHERE g.guild_id = ? ORDER BY m.id DESC",
+            (guild_id,),
+        ).fetchall()
 
     def unreported(self, guild_id: int, min_severity: int) -> list[sqlite3.Row]:
         return self.conn.execute(
-            "SELECT id, channel_id, author_id, author_name, content, severity, reason FROM messages"
+            "SELECT id, channel_id, author_id, author_name, content, severity, reason, labels FROM messages"
             " WHERE guild_id = ? AND reported = 0 AND severity >= ? ORDER BY id",
             (guild_id, min_severity),
         ).fetchall()
@@ -271,7 +342,7 @@ class DB:
 
     def worst_posts(self, guild_id: int, user_id: int, limit: int = 5) -> list[sqlite3.Row]:
         return self.conn.execute(
-            "SELECT id, channel_id, content, severity, reason FROM messages"
+            "SELECT id, channel_id, content, severity, reason, labels FROM messages"
             " WHERE guild_id = ? AND author_id = ? AND severity > 0"
             " ORDER BY severity DESC, id DESC LIMIT ?",
             (guild_id, user_id, limit),
@@ -285,7 +356,7 @@ class DB:
         args = (guild_id, user_id) if user_id else (guild_id,)
         total = self.conn.execute(f"SELECT COUNT(*) FROM messages WHERE {where}", args).fetchone()[0]
         rows = self.conn.execute(
-            f"SELECT id, channel_id, author_name, content, severity, reason, deleted FROM messages WHERE {where}"
+            f"SELECT id, channel_id, author_name, content, severity, reason, deleted, labels FROM messages WHERE {where}"
             " ORDER BY severity DESC, id DESC LIMIT ? OFFSET ?",
             (*args, limit, offset),
         ).fetchall()
