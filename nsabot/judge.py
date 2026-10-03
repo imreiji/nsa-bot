@@ -99,6 +99,13 @@ people who posted. No slurs, nothing about appearance, race or gender, nothing s
 minors."""
 
 
+VAR_NOTE = """VAR review: the one message with an "i" was deleted by its author shortly after posting.
+Score it on its own merits using the context around it, including how people reacted after it.
+If it looks deleted because it was private rather than embarrassing (an address, phone number,
+email, real name, workplace, private photo, or something personal or upsetting), score it 0 so it
+stays deleted."""
+
+
 class Truncated(Exception):
     """The model used its whole output budget (usually thinking) before finishing the answer."""
 
@@ -140,9 +147,16 @@ class Judge:
         verdicts, _ = await self.judge_with_quip(payload, n, quip=False)
         return verdicts
 
-    async def judge_with_quip(self, payload: dict, n: int, quip: bool) -> tuple[dict[int, tuple[int, str]], str | None]:
-        """Same as judge(), optionally letting the model add a joke if the moment calls for it (no extra call)."""
+    async def judge_with_quip(
+        self, payload: dict, n: int, quip: bool, note: str | None = None
+    ) -> tuple[dict[int, tuple[int, str]], str | None]:
+        """Same as judge(), optionally letting the model add a joke if the moment calls for it (no extra call).
+
+        note: extra instructions for this call only (e.g. VAR_NOTE), sent after the batch.
+        """
         user = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
+        if note:
+            user.append({"role": "user", "content": note})
         if quip:  # after the batch, so the system prompt stays a cacheable prefix
             user.append({"role": "user", "content": QUIP_REQUEST})
         resp = await self._complete(

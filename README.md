@@ -76,6 +76,21 @@ carries:
 Opted-out users are never stored or quoted, even as reply context. Context costs roughly 30-50%
 more tokens per batch than judging posts on their own.
 
+## VAR mode
+
+When someone deletes their own message in a watched server, the bot replays it to DeepSeek with
+the 15 messages before it and 5 after, and if it scores `NSA_VAR_MIN_SEVERITY`+ (default: the
+report threshold) posts a **📺 VAR REVIEW** to the report channel. It also counts on the board.
+
+- Content comes from the bot's database, so even old deletions can be reviewed.
+- Already-scored posts are aired without an API call; nothing is aired twice.
+- Low scores stay silent, and the judge is told to score 0 anything that looks deleted because it
+  was private (addresses, phone numbers, real names, personal stuff).
+- Mod deletions are skipped when the bot has **View Audit Log**; without it, every single delete
+  is treated as a self-delete. Bulk purges are ignored.
+- At most `NSA_VAR_PER_USER_HOUR` (default 5) paid reviews per person per hour.
+- Turn off with `NSA_VAR=off`.
+
 ## Quips
 
 While judging, DeepSeek may add a one-line joke when it thinks the moment calls for it: the

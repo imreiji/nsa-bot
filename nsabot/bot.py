@@ -6,7 +6,7 @@ import logging
 import os
 import re
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import timedelta
 from types import SimpleNamespace
 
@@ -15,7 +15,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from .db import DB, Message
-from .judge import Judge, Truncated, build_payload
+from .judge import VAR_NOTE, Judge, Truncated, build_payload
 
 log = logging.getLogger("nsabot")
 
@@ -42,6 +42,10 @@ SCAN_LIMIT = int(os.getenv("NSA_SCAN_LIMIT", "5000"))
 QUEUE_TRIGGER = int(os.getenv("NSA_QUEUE_TRIGGER", "40"))
 HEARTBEAT_MINUTES = float(os.getenv("NSA_HEARTBEAT_MINUTES", "10"))
 REPORT_MIN_SEVERITY = int(os.getenv("NSA_REPORT_MIN_SEVERITY", "5"))
+VAR = os.getenv("NSA_VAR", "on").lower() not in ("off", "0", "false")  # review self-deleted posts
+VAR_MIN_SEVERITY = int(os.getenv("NSA_VAR_MIN_SEVERITY") or REPORT_MIN_SEVERITY)
+VAR_PER_USER_HOUR = int(os.getenv("NSA_VAR_PER_USER_HOUR", "5"))  # DeepSeek reviews per person per hour
+VAR_AFTER = 5  # messages after the deleted one shown as context (how people reacted)
 MIN_CHARS = int(os.getenv("NSA_MIN_CHARS", "3"))
 QUIPS = os.getenv("NSA_QUIPS", "on").lower() not in ("off", "0", "false")  # the judge decides when to joke
 QUIP_COOLDOWN = float(os.getenv("NSA_QUIP_COOLDOWN_MINUTES", "30")) * 60  # at most one per server this often
@@ -73,6 +77,7 @@ bot = commands.Bot(
 guild_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 watching: dict[int, int] = {}       # guild_id -> report channel id
 spam_limiter = commands.CooldownMapping.from_cooldown(USER_RATE, 60, commands.BucketType.member)
+var_calls: defaultdict[tuple[int, int], deque] = defaultdict(deque)  # (guild, user) -> review times
 last_quip: dict[int, float] = {}  # guild_id -> monotonic time of the last posted quip
 background: set[asyncio.Task] = set()  # keep references so tasks aren't garbage-collected
 
@@ -429,6 +434,106 @@ async def heartbeat():
             await process_in_background(guild)
 
 
+# --- VAR: replay self-deleted posts -----------------------------------------
+
+def var_allowed(guild_id: int, user_id: int) -> bool:
+    """At most VAR_PER_USER_HOUR paid reviews per person per hour, so post-and-delete spam can't burn credit."""
+    calls, now = var_calls[(guild_id, user_id)], time.monotonic()
+    while calls and now - calls[0] > 3600:
+        calls.popleft()
+    if len(calls) >= VAR_PER_USER_HOUR:
+        return False
+    calls.append(now)
+    return True
+
+
+async def deleted_by_mod(guild: discord.Guild, channel_id: int, author_id: int) -> bool:
+    """Self-deletes leave no audit-log entry; a mod deleting someone else's message does."""
+    if not guild.me.guild_permissions.view_audit_log:
+        return False  # can't tell, assume it was their own
+    await asyncio.sleep(2)  # the audit-log entry lands just after the delete event
+    try:
+        async for entry in guild.audit_logs(limit=10, action=discord.AuditLogAction.message_delete):
+            if (discord.utils.utcnow() - entry.created_at) > timedelta(minutes=5):
+                break
+            channel = getattr(entry.extra, "channel", None)
+            if getattr(entry.target, "id", None) == author_id and getattr(channel, "id", None) == channel_id:
+                return True
+    except discord.HTTPException:
+        return False
+    return False
+
+
+async def post_var(guild: discord.Guild, row, severity: int, reason: str | None) -> None:
+    channel = guild.get_channel(watching.get(guild.id, 0))
+    if channel is None:
+        return
+    before = db.timeline(row["channel_id"], row["id"], row["id"], before=1)
+    scene = (f"[just before it]({jump_url(guild.id, row['channel_id'], before[0]['id'])}) in "
+             if before and before[0]["id"] != row["id"] else "")
+    embed = discord.Embed(
+        title=f"📺 VAR REVIEW — {row['author_name']} deleted a post",
+        description=f">>> {clip(discord.utils.escape_markdown(row['content']), 1000)}",
+        color=0x8B0000 if severity >= 8 else 0xE91E63,
+    )
+    embed.add_field(name="Decision", value=f"**{severity}/10 kimoi.** Deletion overturned. The post stands.", inline=False)
+    embed.add_field(name="Analyst note", value=clip(reason or "no comment", 200), inline=False)
+    embed.add_field(name="Scene", value=f"{scene}<#{row['channel_id']}>", inline=False)
+    await channel.send(embed=embed)
+
+
+@bot.listen("on_raw_message_delete")
+async def var_review(event: discord.RawMessageDeleteEvent):
+    """Someone deleted their own message: replay it with context and air it if it was kimoi."""
+    gid, mid, cid = event.guild_id, event.message_id, event.channel_id
+    if not VAR or gid is None or gid not in GUILD_IDS or gid not in watching or not watchable(gid, cid):
+        return
+    guild = bot.get_guild(gid)
+    if guild is None:
+        return
+    opted_out = db.opted_out(gid)
+    row, cached = db.get_message(mid), event.cached_message
+    if cached is not None:
+        if classify(cached, opted_out) is not True:  # bots, commands, "lol", opted-out users
+            return
+        author_id = cached.author.id
+    elif row is not None and row["scored"] and row["author_id"] not in opted_out:
+        author_id = row["author_id"]
+    else:
+        return  # never saw it, or not worth reviewing
+    if await deleted_by_mod(guild, cid, author_id):
+        log.info("VAR: message %s was removed by a mod, not reviewing", mid)
+        return
+    if row is None:  # only in Discord's cache: store it so it has context and a place on the board
+        db.save_message(to_row(cached, True, opted_out))
+        row = db.get_message(mid)
+    db.mark_deleted(mid)
+    if row["reported"]:
+        return  # already aired
+    severity, reason = row["severity"], row["reason"]
+    if severity is None:  # not judged yet: replay it now
+        if not var_allowed(gid, author_id):
+            log.info("VAR: %s hit the review limit, skipping %s", author_id, mid)
+            return
+        timeline = db.timeline(cid, mid, mid, before=CONTEXT_MESSAGES) + db.timeline_after(cid, mid, VAR_AFTER)
+        payload, _ = build_payload(channel_info(guild, cid), timeline, [mid])
+        try:
+            result, _ = await judge.judge_with_quip(payload, 1, quip=False, note=VAR_NOTE)
+        except Exception:
+            log.exception("VAR review of %s failed", mid)
+            return
+        severity, reason = result.get(0, (0, None))
+        db.save_verdicts([(mid, severity, reason)])
+    log.info("VAR: %s deleted %s, %d/10", row["author_name"], mid, severity)
+    if severity >= VAR_MIN_SEVERITY:
+        try:
+            await post_var(guild, row, severity, reason)
+        except discord.HTTPException:
+            log.warning("couldn't post VAR review of %s", mid)
+            return
+        db.mark_reported([mid])
+
+
 # --- commands ---------------------------------------------------------------
 
 async def run_scan(ctx: commands.Context, channels: list[discord.abc.Messageable]) -> None:
@@ -560,10 +665,10 @@ def kimoi_page(guild_id: int, user: discord.Member | None, page: int) -> tuple[d
     title = f"🗄️ Kimoi archive: {user.display_name}" if user else "🗄️ Kimoi archive"
     lines = []
     for n, r in enumerate(rows, start=page * POSTS_PER_PAGE + 1):
-        link = jump_url(guild_id, r["channel_id"], r["id"])
+        where = "📺 deleted, caught by VAR" if r["deleted"] else f"[jump]({jump_url(guild_id, r['channel_id'], r['id'])})"
         who = "" if user else f" · **{discord.utils.escape_markdown(r['author_name'])}**"
         lines.append(
-            f"`#{n}` **{r['severity']}/10**{who} · [jump]({link})\n"
+            f"`#{n}` **{r['severity']}/10**{who} · {where}\n"
             f"> {clip(discord.utils.escape_markdown(r['content']), 160)}\n"
             f"*{clip(r['reason'] or 'no comment', 90)}*"
         )

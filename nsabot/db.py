@@ -20,7 +20,8 @@ CREATE TABLE IF NOT EXISTS messages (
     reply_author_id INTEGER,
     reply_author    TEXT,
     reply_text      TEXT,
-    extras      TEXT                   -- attachments, stickers, embeds, forwards, as text
+    extras      TEXT,                  -- attachments, stickers, embeds, forwards, as text
+    deleted     INTEGER NOT NULL DEFAULT 0  -- deleted by its author (VAR reviewed)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_unjudged ON messages (guild_id, severity);
 CREATE INDEX IF NOT EXISTS idx_messages_author ON messages (guild_id, author_id);
@@ -61,6 +62,7 @@ MIGRATIONS = {
     "reply_author": "TEXT",
     "reply_text": "TEXT",
     "extras": "TEXT",
+    "deleted": "INTEGER NOT NULL DEFAULT 0",
 }
 
 INSERT = (
@@ -171,6 +173,19 @@ class DB:
         ).fetchall()
         return earlier[::-1] + window
 
+    def timeline_after(self, channel_id: int, after_id: int, limit: int) -> list[sqlite3.Row]:
+        """The next `limit` stored messages after after_id (how people reacted)."""
+        return self.conn.execute(
+            TIMELINE + " WHERE m.channel_id = ? AND m.id > ? ORDER BY m.id LIMIT ?", (channel_id, after_id, limit)
+        ).fetchall()
+
+    def get_message(self, message_id: int) -> sqlite3.Row | None:
+        return self.conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+
+    def mark_deleted(self, message_id: int) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE messages SET deleted = 1 WHERE id = ?", (message_id,))
+
     def save_verdicts(self, verdicts: list[tuple[int, int, str | None]]) -> None:
         """verdicts: (message_id, severity, reason)."""
         with self.conn:
@@ -262,7 +277,7 @@ class DB:
         args = (guild_id, user_id) if user_id else (guild_id,)
         total = self.conn.execute(f"SELECT COUNT(*) FROM messages WHERE {where}", args).fetchone()[0]
         rows = self.conn.execute(
-            f"SELECT id, channel_id, author_name, content, severity, reason FROM messages WHERE {where}"
+            f"SELECT id, channel_id, author_name, content, severity, reason, deleted FROM messages WHERE {where}"
             " ORDER BY severity DESC, id DESC LIMIT ? OFFSET ?",
             (*args, limit, offset),
         ).fetchall()
