@@ -94,9 +94,9 @@ file if they have one, and replies to that message in character, in the language
 
 - Only explicit @mentions count. Replying to the bot's own messages (which pings it automatically)
   is ignored, and so are plain pings that aren't replies.
-- Thinking is off for these (`NSA_RESPOND_THINKING`), so replies take seconds and cost about $0.001.
-- `NSA_RESPOND=on` (everyone, `NSA_RESPOND_PER_USER_HOUR` each, default 10; admins unlimited),
-  `admins`, or `off`. Over the limit the bot reacts ⏳ instead of replying.
+- Thinking is on (`NSA_RESPOND_THINKING`), so replies are more considered but take longer.
+- `NSA_RESPOND=on` (everyone, unlimited), `admins`, or `off`. Set `NSA_RESPOND_PER_USER_HOUR` to cap
+  it per person; over the cap the bot reacts ⏳ instead of replying.
 - Opted-out users' messages are left out of the context, and their posts are never answered.
 
 ## VAR mode

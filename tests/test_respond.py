@@ -88,7 +88,7 @@ def test_answers_the_target_with_30_messages_of_context(chat):
     assert len(payload["conversation"]) == 30 and payload["conversation"][-1]["text"].startswith("I'd throw away")
     assert payload["target"]["author"] == "yargas"
     assert payload["request"] == {"author": "ハムP", "text": "is this a unicorn take"}
-    assert call["extra_body"]["thinking"]["type"] == "disabled"  # snappy chat replies
+    assert call["extra_body"]["thinking"]["type"] == "enabled"
     assert chat.target.replies == ["Ten seconds. Bold of you to assume she'd stay for ten."]
 
 
@@ -132,3 +132,10 @@ def test_hourly_limit_reacts_instead_of_replying(chat, monkeypatch):
     assert len(chat.calls) == 2 and msgs[2].reactions == ["⏳"]
     ping(chat, author=(1, "admin"), mid=300)  # admins are unlimited
     assert len(chat.calls) == 3
+
+
+def test_unlimited_by_default(chat):
+    assert b.RESPOND_PER_USER_HOUR == 0
+    for i in range(25):
+        ping(chat, mid=400 + i)
+    assert len(chat.calls) == 25

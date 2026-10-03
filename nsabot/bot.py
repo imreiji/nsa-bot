@@ -47,9 +47,9 @@ ROAST_PUBLIC = os.getenv("NSA_ROAST_PUBLIC", "off").lower() in ("on", "1", "true
 ROAST_PER_USER_HOUR = int(os.getenv("NSA_ROAST_PER_USER_HOUR", "3"))  # when public; admins are exempt
 DOSSIER_PUBLIC = os.getenv("NSA_DOSSIER_PUBLIC", "on").lower() in ("on", "1", "true")  # let everyone use /dossier
 DOSSIER_PER_USER_HOUR = int(os.getenv("NSA_DOSSIER_PER_USER_HOUR", "3"))
-RESPOND = os.getenv("NSA_RESPOND", "on").lower()  # on = everyone (hourly limit), admins, off
-RESPOND_PER_USER_HOUR = int(os.getenv("NSA_RESPOND_PER_USER_HOUR", "10"))
-RESPOND_THINKING = os.getenv("NSA_RESPOND_THINKING", "off").lower() in ("on", "1", "true")
+RESPOND = os.getenv("NSA_RESPOND", "on").lower()  # on = everyone, admins, off
+RESPOND_PER_USER_HOUR = int(os.getenv("NSA_RESPOND_PER_USER_HOUR", "0"))  # 0 = unlimited
+RESPOND_THINKING = os.getenv("NSA_RESPOND_THINKING", "on").lower() in ("on", "1", "true")
 RESPOND_CONTEXT = 30  # messages before the ping shown as context
 VAR = os.getenv("NSA_VAR", "on").lower() not in ("off", "0", "false")  # review self-deleted posts
 VAR_MIN_SEVERITY = int(os.getenv("NSA_VAR_MIN_SEVERITY") or REPORT_MIN_SEVERITY)
@@ -129,8 +129,8 @@ def public_ai(flag: str):
 
 
 def ai_allowed(kind: str, guild_id: int, user_id: int, per_hour: int) -> bool:
-    """Non-admins get `per_hour` uses of a DeepSeek-backed fun command per hour."""
-    if user_id in ADMIN_IDS:
+    """Non-admins get `per_hour` uses of a DeepSeek-backed fun command per hour (0 = unlimited)."""
+    if user_id in ADMIN_IDS or per_hour <= 0:
         return True
     calls, now = ai_calls[(kind, guild_id, user_id)], time.monotonic()
     while calls and now - calls[0] > 3600:
