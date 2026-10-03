@@ -496,6 +496,99 @@ async def kimoiboard(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
+POSTS_PER_PAGE = 10
+
+
+def kimoi_page(guild_id: int, user: discord.Member | None, page: int) -> tuple[discord.Embed, int]:
+    """One page of the kimoi archive. Returns the embed and the number of pages."""
+    total, rows = db.kimoi_posts(guild_id, user.id if user else None, page * POSTS_PER_PAGE, POSTS_PER_PAGE)
+    pages = max(1, -(-total // POSTS_PER_PAGE))
+    title = f"🗄️ Kimoi archive: {user.display_name}" if user else "🗄️ Kimoi archive"
+    lines = []
+    for n, r in enumerate(rows, start=page * POSTS_PER_PAGE + 1):
+        link = jump_url(guild_id, r["channel_id"], r["id"])
+        who = "" if user else f" · **{discord.utils.escape_markdown(r['author_name'])}**"
+        lines.append(
+            f"`#{n}` **{r['severity']}/10**{who} · [jump]({link})\n"
+            f"> {clip(discord.utils.escape_markdown(r['content']), 160)}\n"
+            f"*{clip(r['reason'] or 'no comment', 90)}*"
+        )
+    embed = discord.Embed(
+        title=title,
+        description="\n\n".join(lines) or "Nothing on file. Suspiciously clean.",
+        color=0xE91E63,
+    )
+    embed.set_footer(text=f"Page {page + 1}/{pages} · {total:,} kimoi posts")
+    return embed, pages
+
+
+class KimoiPager(discord.ui.View):
+    """◀ ▶ buttons for the archive. Only the person who opened it can flip pages."""
+
+    def __init__(self, owner_id: int, guild_id: int, user: discord.Member | None, pages: int):
+        super().__init__(timeout=300)
+        self.owner_id, self.guild_id, self.user = owner_id, guild_id, user
+        self.page, self.pages = 0, pages
+        self.message: discord.Message | None = None
+        self._sync()
+
+    def _sync(self) -> None:
+        self.first.disabled = self.prev.disabled = self.page == 0
+        self.next.disabled = self.last.disabled = self.page >= self.pages - 1
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                f"Open your own with `{PREFIX}kimoiposts`.", ephemeral=True
+            )
+            return False
+        return True
+
+    async def _show(self, interaction: discord.Interaction, page: int) -> None:
+        embed, self.pages = kimoi_page(self.guild_id, self.user, page)  # re-count: scans may add posts
+        self.page = min(page, self.pages - 1)
+        if self.page != page:
+            embed, _ = kimoi_page(self.guild_id, self.user, self.page)
+        self._sync()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(emoji="⏮️", style=discord.ButtonStyle.secondary)
+    async def first(self, interaction: discord.Interaction, _):
+        await self._show(interaction, 0)
+
+    @discord.ui.button(emoji="◀️", style=discord.ButtonStyle.primary)
+    async def prev(self, interaction: discord.Interaction, _):
+        await self._show(interaction, max(0, self.page - 1))
+
+    @discord.ui.button(emoji="▶️", style=discord.ButtonStyle.primary)
+    async def next(self, interaction: discord.Interaction, _):
+        await self._show(interaction, self.page + 1)
+
+    @discord.ui.button(emoji="⏭️", style=discord.ButtonStyle.secondary)
+    async def last(self, interaction: discord.Interaction, _):
+        await self._show(interaction, self.pages - 1)
+
+    async def on_timeout(self) -> None:
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
+@bot.command(aliases=["kimoilist", "archive"], help="Every kimoi post, most kimoi first, with page buttons.")
+@commands.cooldown(1, 10, commands.BucketType.user)
+async def kimoiposts(ctx: commands.Context, member: discord.Member | None = None):
+    embed, pages = kimoi_page(ctx.guild.id, member, 0)
+    if pages <= 1:
+        await ctx.send(embed=embed)
+        return
+    view = KimoiPager(ctx.author.id, ctx.guild.id, member, pages)
+    view.message = await ctx.send(embed=embed, view=view)
+
+
 @bot.command(help="A user's kimoi file: rank, stats and worst posts.")
 @commands.cooldown(1, 10, commands.BucketType.user)
 async def kimoi(ctx: commands.Context, member: discord.Member | None = None):

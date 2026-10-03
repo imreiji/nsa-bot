@@ -254,6 +254,20 @@ class DB:
             (guild_id, user_id, limit),
         ).fetchall()
 
+    def kimoi_posts(
+        self, guild_id: int, user_id: int | None = None, offset: int = 0, limit: int = 10
+    ) -> tuple[int, list[sqlite3.Row]]:
+        """All flagged posts, most kimoi first (newest first within a score). Returns (total, page)."""
+        where = "guild_id = ? AND severity > 0" + (" AND author_id = ?" if user_id else "")
+        args = (guild_id, user_id) if user_id else (guild_id,)
+        total = self.conn.execute(f"SELECT COUNT(*) FROM messages WHERE {where}", args).fetchone()[0]
+        rows = self.conn.execute(
+            f"SELECT id, channel_id, author_name, content, severity, reason FROM messages WHERE {where}"
+            " ORDER BY severity DESC, id DESC LIMIT ? OFFSET ?",
+            (*args, limit, offset),
+        ).fetchall()
+        return total, rows
+
     # --- opt-out ------------------------------------------------------------
 
     def opted_out(self, guild_id: int) -> set[int]:
