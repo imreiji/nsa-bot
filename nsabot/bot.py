@@ -68,6 +68,7 @@ bot = commands.Bot(
     intents=intents,
     # Reposted messages must never ping anyone (@everyone, roles, users).
     allowed_mentions=discord.AllowedMentions.none(),
+    help_command=None,  # replaced by the !help command below
 )
 guild_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 watching: dict[int, int] = {}       # guild_id -> report channel id
@@ -98,7 +99,12 @@ def deployer_only():
         if ctx.author.id not in ADMIN_IDS:
             raise commands.CheckFailure("You lack clearance for that.")
         return True
+    predicate.admin_only = True  # lets !help sort commands into public and admin
     return commands.check(predicate)
+
+
+def admin_only(command: commands.Command) -> bool:
+    return any(getattr(check, "admin_only", False) for check in command.checks)
 
 
 async def leave_if_unlisted(guild: discord.Guild) -> None:
@@ -686,6 +692,43 @@ async def optout(ctx: commands.Context):
 async def optin(ctx: commands.Context):
     db.opt_in(ctx.guild.id, ctx.author.id)
     await ctx.send(f"{ctx.author.display_name} is back under surveillance. Brave.")
+
+
+def usage_line(command: commands.Command) -> str:
+    return f"`{PREFIX}{command.name}{' ' + command.signature if command.signature else ''}`"
+
+
+@bot.command(name="help", aliases=["commands"], help="List every command, or explain one: !help kimoiposts")
+@commands.cooldown(1, 5, commands.BucketType.user)
+async def help_(ctx: commands.Context, name: str | None = None):
+    if name:
+        command = bot.get_command(name.lstrip(PREFIX))
+        if command is None or (admin_only(command) and ctx.author.id not in ADMIN_IDS):
+            await ctx.send(f"No command called `{name}`. Try `{PREFIX}help`.")
+            return
+        embed = discord.Embed(title=usage_line(command), description=command.help or "", color=0xE91E63)
+        if command.aliases:
+            embed.add_field(name="Also works as", value=", ".join(f"`{PREFIX}{a}`" for a in command.aliases))
+        if admin_only(command):
+            embed.set_footer(text="Admins only")
+        await ctx.send(embed=embed)
+        return
+
+    def section(cmds) -> str:
+        return "\n".join(f"{usage_line(c)} {c.help or ''}" for c in sorted(cmds, key=lambda c: c.name))
+
+    visible = [c for c in bot.commands if not c.hidden]
+    embed = discord.Embed(
+        title="🕵️ NSA field manual",
+        description="The Neckbeard Surveillance Agency reads the chat and ranks the kimoi.",
+        color=0xE91E63,
+    )
+    embed.add_field(name="Everyone", value=section(c for c in visible if not admin_only(c)), inline=False)
+    if ctx.author.id in ADMIN_IDS:
+        embed.add_field(name="Admins (spend DeepSeek credit)", value=section(c for c in visible if admin_only(c)),
+                        inline=False)
+    embed.set_footer(text=f"{PREFIX}help <command> for details · [optional] <required>")
+    await ctx.send(embed=embed)
 
 
 # --- lifecycle --------------------------------------------------------------
