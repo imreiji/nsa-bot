@@ -78,3 +78,37 @@ def test_pager_buttons():
         assert sent["reply"][1] is True  # only the stranger sees the "open your own" note
 
     asyncio.run(run())
+
+
+def test_find_author_for_people_who_left():
+    db = DB(":memory:")
+    db.save_batch(50, 3, [Message(1, GUILD, 50, 77, "OldName", "hi"), Message(2, GUILD, 50, 77, "Yargas", "hi"),
+                          Message(3, GUILD, 50, 88, "someone", "hi")])
+    assert db.find_author(GUILD, "yargas")["author_id"] == 77  # case-insensitive
+    assert db.find_author(GUILD, "@Yargas")["author_id"] == 77
+    assert db.find_author(GUILD, "77")["author_name"] == "Yargas"  # latest name
+    assert db.find_author(GUILD, "<@!77>")["author_id"] == 77
+    assert db.find_author(GUILD, "nobody") is None
+    assert db.find_author(99, "yargas") is None  # other servers' files stay separate
+
+
+def test_archive_works_for_someone_who_left(monkeypatch):
+    import pytest
+    from discord.ext import commands
+
+    async def not_a_member(self, ctx, argument):
+        raise commands.MemberNotFound(argument)
+
+    monkeypatch.setattr(commands.MemberConverter, "convert", not_a_member)
+    seed(b.db, n=30)
+    ctx = NS(guild=NS(id=GUILD))
+
+    async def run():
+        who = await b.Suspect().convert(ctx, "user5")
+        assert (who.id, who.display_name) == (5, "user5")
+        embed, pages = b.kimoi_page(GUILD, who, 0)
+        assert embed.title == "🗄️ Kimoi archive: user5" and pages == 2
+        with pytest.raises(commands.BadArgument, match="No one called"):
+            await b.Suspect().convert(ctx, "ghost")
+
+    asyncio.run(run())

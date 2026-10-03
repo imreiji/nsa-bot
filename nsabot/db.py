@@ -268,6 +268,18 @@ class DB:
         ).fetchall()
         return total, rows
 
+    def find_author(self, guild_id: int, query: str) -> sqlite3.Row | None:
+        """Someone on file by ID, mention or the name they last posted under (for people who left)."""
+        digits = query.strip("<@!>")
+        if digits.isdigit():
+            sql, arg = "author_id = ?", int(digits)
+        else:
+            sql, arg = "author_name = ? COLLATE NOCASE", query.lstrip("@")
+        return self.conn.execute(
+            f"SELECT author_id, author_name FROM messages WHERE guild_id = ? AND {sql} ORDER BY id DESC LIMIT 1",
+            (guild_id, arg),
+        ).fetchone()
+
     # --- opt-out ------------------------------------------------------------
 
     def opted_out(self, guild_id: int) -> set[int]:

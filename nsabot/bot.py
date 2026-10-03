@@ -7,6 +7,7 @@ import os
 import re
 import time
 from collections import defaultdict
+from types import SimpleNamespace
 
 import discord
 from discord.ext import commands, tasks
@@ -178,6 +179,20 @@ def channel_info(guild: discord.Guild, channel_id: int) -> dict:
         info["topic"] = clip(topic, 200)
     info["nsfw"] = bool(ch.is_nsfw()) if hasattr(ch, "is_nsfw") else False
     return info
+
+
+class Suspect(commands.Converter):
+    """A server member, or someone who has left but is still on file (by ID, mention or old name)."""
+
+    async def convert(self, ctx: commands.Context, argument: str):
+        try:
+            return await commands.MemberConverter().convert(ctx, argument)
+        except commands.BadArgument:
+            pass
+        row = db.find_author(ctx.guild.id, argument)
+        if row is None:
+            raise commands.BadArgument(f'No one called "{argument}" on file.')
+        return SimpleNamespace(id=row["author_id"], display_name=row["author_name"])
 
 
 # --- pipeline: scrape -> judge -> report ------------------------------------
@@ -462,7 +477,7 @@ async def usage(ctx: commands.Context):
 @bot.command(help="Have the analyst write up a classified dossier on someone.")
 @deployer_only()
 @commands.cooldown(1, 30, commands.BucketType.guild)
-async def dossier(ctx: commands.Context, member: discord.Member | None = None):
+async def dossier(ctx: commands.Context, member: Suspect = None):
     member = member or ctx.author
     found = db.standing(ctx.guild.id, member.id)
     if not found:
@@ -580,7 +595,7 @@ class KimoiPager(discord.ui.View):
 
 @bot.command(aliases=["kimoilist", "archive"], help="Every kimoi post, most kimoi first, with page buttons.")
 @commands.cooldown(1, 10, commands.BucketType.user)
-async def kimoiposts(ctx: commands.Context, member: discord.Member | None = None):
+async def kimoiposts(ctx: commands.Context, member: Suspect = None):
     embed, pages = kimoi_page(ctx.guild.id, member, 0)
     if pages <= 1:
         await ctx.send(embed=embed)
@@ -591,7 +606,7 @@ async def kimoiposts(ctx: commands.Context, member: discord.Member | None = None
 
 @bot.command(help="A user's kimoi file: rank, stats and worst posts.")
 @commands.cooldown(1, 10, commands.BucketType.user)
-async def kimoi(ctx: commands.Context, member: discord.Member | None = None):
+async def kimoi(ctx: commands.Context, member: Suspect = None):
     member = member or ctx.author
     found = db.standing(ctx.guild.id, member.id)
     if not found:
