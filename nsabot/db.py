@@ -261,6 +261,14 @@ class DB:
                 return rank, Standing(**dict(row))
         return None
 
+    def recent_posts(self, guild_id: int, user_id: int, limit: int = 40) -> list[sqlite3.Row]:
+        """Someone's latest real posts (not reactions), newest first, flagged or not."""
+        return self.conn.execute(
+            "SELECT content, severity FROM messages WHERE guild_id = ? AND author_id = ? AND scored = 1"
+            " ORDER BY id DESC LIMIT ?",
+            (guild_id, user_id, limit),
+        ).fetchall()
+
     def worst_posts(self, guild_id: int, user_id: int, limit: int = 5) -> list[sqlite3.Row]:
         return self.conn.execute(
             "SELECT id, channel_id, content, severity, reason FROM messages"

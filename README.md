@@ -23,6 +23,7 @@ run, oldest first). At most 20 reports are posted per sweep; the rest are summar
 | `!watch #channel` / `!unwatch` | admin UIDs | Start / stop live surveillance and set the report channel |
 | `!scan [#ch ...]` / `!scanall` | admin UIDs | Judge channel history (default: current channel) |
 | `!usage` | admin UIDs | DeepSeek tokens used today, queue size |
+| `!roast [@user]` | admin UIDs (everyone with `NSA_ROAST_PUBLIC=on`, 3/hour each) | Comedy roast built from their recent posts, kimoi stats and worst posts |
 | `!dossier [@user]` | admin UIDs | DeepSeek writes a classified report roasting the user's worst posts |
 | `!kimoiboard` | anyone | Top 10 leaderboard (no API cost) |
 | `!kimoi [@user]` | anyone | Rank, stats and worst posts with links (no API cost) |

@@ -42,6 +42,8 @@ SCAN_LIMIT = int(os.getenv("NSA_SCAN_LIMIT", "5000"))
 QUEUE_TRIGGER = int(os.getenv("NSA_QUEUE_TRIGGER", "40"))
 HEARTBEAT_MINUTES = float(os.getenv("NSA_HEARTBEAT_MINUTES", "10"))
 REPORT_MIN_SEVERITY = int(os.getenv("NSA_REPORT_MIN_SEVERITY", "5"))
+ROAST_PUBLIC = os.getenv("NSA_ROAST_PUBLIC", "off").lower() in ("on", "1", "true")  # let everyone use !roast
+ROAST_PER_USER_HOUR = int(os.getenv("NSA_ROAST_PER_USER_HOUR", "3"))  # when public; admins are exempt
 VAR = os.getenv("NSA_VAR", "on").lower() not in ("off", "0", "false")  # review self-deleted posts
 VAR_MIN_SEVERITY = int(os.getenv("NSA_VAR_MIN_SEVERITY") or REPORT_MIN_SEVERITY)
 VAR_PER_USER_HOUR = int(os.getenv("NSA_VAR_PER_USER_HOUR", "5"))  # DeepSeek reviews per person per hour
@@ -77,6 +79,7 @@ bot = commands.Bot(
 guild_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 watching: dict[int, int] = {}       # guild_id -> report channel id
 spam_limiter = commands.CooldownMapping.from_cooldown(USER_RATE, 60, commands.BucketType.member)
+roast_calls: defaultdict[tuple[int, int], deque] = defaultdict(deque)  # (guild, user) -> roast times
 var_calls: defaultdict[tuple[int, int], deque] = defaultdict(deque)  # (guild, user) -> review times
 last_quip: dict[int, float] = {}  # guild_id -> monotonic time of the last posted quip
 background: set[asyncio.Task] = set()  # keep references so tasks aren't garbage-collected
@@ -106,6 +109,29 @@ def deployer_only():
         return True
     predicate.admin_only = True  # lets !help sort commands into public and admin
     return commands.check(predicate)
+
+
+def roast_access():
+    """Admins always; everyone else only with NSA_ROAST_PUBLIC=on (and then a few per hour, see !roast)."""
+    async def predicate(ctx: commands.Context) -> bool:
+        if ctx.author.id in ADMIN_IDS or ROAST_PUBLIC:
+            return True
+        raise commands.CheckFailure("You lack clearance for that.")
+    predicate.admin_only = not ROAST_PUBLIC
+    return commands.check(predicate)
+
+
+def roast_allowed(guild_id: int, user_id: int) -> bool:
+    """Non-admins get ROAST_PER_USER_HOUR roasts an hour."""
+    if user_id in ADMIN_IDS:
+        return True
+    calls, now = roast_calls[(guild_id, user_id)], time.monotonic()
+    while calls and now - calls[0] > 3600:
+        calls.popleft()
+    if len(calls) >= ROAST_PER_USER_HOUR:
+        return False
+    calls.append(now)
+    return True
 
 
 def admin_only(command: commands.Command) -> bool:
@@ -633,6 +659,35 @@ async def dossier(ctx: commands.Context, member: Suspect = None):
     async with ctx.typing():
         text = await judge.roast(member.display_name, stats, posts)
     await ctx.send(f"**CLASSIFIED — {member.display_name}**\n{clip(text, 1900)}")
+
+
+@bot.command(help="Get the analyst to roast someone (or yourself) based on what they post.")
+@roast_access()
+@commands.cooldown(1, 20, commands.BucketType.channel)
+async def roast(ctx: commands.Context, member: Suspect = None):
+    member = member or ctx.author
+    recent = [r["content"] for r in db.recent_posts(ctx.guild.id, member.id)]
+    if not recent:
+        await ctx.send(f"No intel on {member.display_name}. Can't roast a ghost.")
+        return
+    if not roast_allowed(ctx.guild.id, ctx.author.id):
+        await ctx.send(f"Roast limit reached ({ROAST_PER_USER_HOUR}/hour). The analyst needs water.")
+        return
+    found = db.standing(ctx.guild.id, member.id)
+    if found:
+        rank, s = found
+        stats = f"kimoi rank #{rank}, {s.hits} kimoi posts out of {s.judged}, avg severity {s.avg_severity:.1f}/10"
+    else:
+        stats = "no kimoi posts on file (suspiciously clean)"
+    worst = [(p["severity"], p["content"], p["reason"] or "") for p in db.worst_posts(ctx.guild.id, member.id, 6)]
+    async with ctx.typing():
+        text = await judge.burn(member.display_name, stats, worst, recent)
+    if not text:
+        await ctx.send("The analyst opened their mouth and nothing came out. Try again.")
+        return
+    embed = discord.Embed(title=f"🔥 ROAST: {member.display_name}", description=clip(text, 1500), color=0xFF4500)
+    embed.set_footer(text="Neckbeard Surveillance Agency · comedy division")
+    await ctx.send(embed=embed)
 
 
 @bot.command(aliases=["kimoirank"], help="The kimoi leaderboard.")
