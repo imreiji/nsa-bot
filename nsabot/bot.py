@@ -16,7 +16,7 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
 from .db import DB, Message
-from .judge import VAR_NOTE, Judge, Truncated, build_payload
+from .judge import VAR_NOTE, Judge, Truncated, build_payload, message_time
 
 log = logging.getLogger("nsabot")
 
@@ -47,6 +47,10 @@ ROAST_PUBLIC = os.getenv("NSA_ROAST_PUBLIC", "off").lower() in ("on", "1", "true
 ROAST_PER_USER_HOUR = int(os.getenv("NSA_ROAST_PER_USER_HOUR", "3"))  # when public; admins are exempt
 DOSSIER_PUBLIC = os.getenv("NSA_DOSSIER_PUBLIC", "on").lower() in ("on", "1", "true")  # let everyone use /dossier
 DOSSIER_PER_USER_HOUR = int(os.getenv("NSA_DOSSIER_PER_USER_HOUR", "3"))
+RESPOND = os.getenv("NSA_RESPOND", "on").lower()  # on = everyone (hourly limit), admins, off
+RESPOND_PER_USER_HOUR = int(os.getenv("NSA_RESPOND_PER_USER_HOUR", "10"))
+RESPOND_THINKING = os.getenv("NSA_RESPOND_THINKING", "off").lower() in ("on", "1", "true")
+RESPOND_CONTEXT = 30  # messages before the ping shown as context
 VAR = os.getenv("NSA_VAR", "on").lower() not in ("off", "0", "false")  # review self-deleted posts
 VAR_MIN_SEVERITY = int(os.getenv("NSA_VAR_MIN_SEVERITY") or REPORT_MIN_SEVERITY)
 VAR_PER_USER_HOUR = int(os.getenv("NSA_VAR_PER_USER_HOUR", "5"))  # DeepSeek reviews per person per hour
@@ -461,6 +465,105 @@ async def heartbeat():
         guild = bot.get_guild(guild_id)
         if guild and db.count_unjudged(guild_id):
             await process_in_background(guild)
+
+
+# --- respond: reply-and-ping the bot to get its take --------------------------
+
+def pings_bot(m: discord.Message) -> bool:
+    """An explicit @mention of the bot (or its role), not just Discord's reply ping."""
+    me = m.guild.me
+    if me is None:
+        return False
+    in_text = f"<@{me.id}>" in m.content or f"<@!{me.id}>" in m.content
+    role = getattr(m.guild, "self_role", None)  # the bot's own managed role
+    return in_text or bool(role and role in m.role_mentions)
+
+
+def chat_item(m: discord.Message, limit: int = 300) -> dict:
+    item = {"author": m.author.display_name, "time": message_time(m.id), "text": clip(plain_text(m), limit)}
+    ref = m.reference.resolved if m.reference else None
+    if isinstance(ref, discord.Message):
+        item["reply_to"] = {"author": ref.author.display_name, "text": clip(plain_text(ref), 150)}
+    if extras := describe_extras(m):
+        item["attachments"] = clip(extras, 200)
+    return item
+
+
+def kimoi_file(guild_id: int, user_id: int) -> str | None:
+    found = db.standing(guild_id, user_id)
+    if not found:
+        return None
+    rank, s = found
+    worst = db.worst_posts(guild_id, user_id, 2)
+    lines = [f"kimoi rank #{rank}, {s.hits} kimoi posts out of {s.judged}, avg severity {s.avg_severity:.1f}/10"]
+    lines += [f"worst: [{p['severity']}/10] {clip(p['content'], 120)}" for p in worst]
+    return "; ".join(lines)
+
+
+async def build_respond_payload(trigger: discord.Message, target: discord.Message, opted_out: set[int]) -> dict:
+    history = [m async for m in trigger.channel.history(limit=RESPOND_CONTEXT, before=trigger)]
+    conversation = [
+        item for m in reversed(history)
+        if m.author.id not in opted_out and not m.content.startswith(PREFIX)
+        and ((item := chat_item(m))["text"] or "attachments" in item)
+    ]
+    me = trigger.guild.me
+    request = plain_text(trigger)
+    for name in {me.display_name, me.name}:
+        request = request.replace(f"@{name}", "").strip()
+    target_item = chat_item(target, 800)
+    if file := kimoi_file(trigger.guild.id, target.author.id):
+        target_item["kimoi_file"] = file
+    return {
+        "channel": channel_info(trigger.guild, trigger.channel.id),
+        "conversation": conversation,
+        "target": target_item,
+        "request": {"author": trigger.author.display_name, "text": request or "(no request, just respond)"},
+    }
+
+
+@bot.listen("on_message")
+async def respond_to_ping(m: discord.Message):
+    """Someone replied to a message and pinged the bot: answer that message in context."""
+    if RESPOND == "off" or m.guild is None or m.guild.id not in GUILD_IDS or m.author.bot:
+        return
+    if not m.reference or not m.reference.message_id or m.content.startswith(PREFIX) or not pings_bot(m):
+        return
+    if m.channel.id in IGNORE_CHANNEL_IDS:
+        return
+    if RESPOND == "admins" and m.author.id not in ADMIN_IDS:
+        return
+    target = m.reference.resolved
+    if target is None or isinstance(target, discord.DeletedReferencedMessage):  # not sent along: fetch it
+        try:
+            target = await m.channel.fetch_message(m.reference.message_id)
+        except discord.HTTPException:
+            return
+    if target.author.id == bot.user.id:
+        return  # replies to the bot ping it automatically; only answer replies to other people
+    opted_out = db.opted_out(m.guild.id)
+    if m.author.id in opted_out or target.author.id in opted_out:
+        return
+    if not ai_allowed("respond", m.guild.id, m.author.id, RESPOND_PER_USER_HOUR):
+        try:
+            await m.add_reaction("⏳")
+        except discord.HTTPException:
+            pass
+        return
+    log.info("%s (%s) asked for a response to %s in #%s", m.author, m.author.id, target.id, getattr(m.channel, "name", "?"))
+    try:
+        async with m.channel.typing():
+            payload = await build_respond_payload(m, target, opted_out)
+            text = await judge.respond(payload, thinking=RESPOND_THINKING)
+    except Exception:
+        log.exception("respond failed for %s", m.id)
+        return
+    if not text:
+        return
+    try:
+        await target.reply(clip(text, 1900), mention_author=False)
+    except discord.HTTPException:  # target vanished: answer the ping instead
+        await m.reply(clip(text, 1900), mention_author=False)
 
 
 # --- VAR: replay self-deleted posts -----------------------------------------
