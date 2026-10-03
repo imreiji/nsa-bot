@@ -75,6 +75,14 @@ carries:
 Opted-out users are never stored or quoted, even as reply context. Context costs roughly 30-50%
 more tokens per batch than judging posts on their own.
 
+## Quips
+
+While judging, DeepSeek may add a one-line joke when it thinks the moment calls for it: the
+chat just did something absurd, ironic or very kimoi. It stays quiet otherwise, and never jokes
+when someone is upset. Jokes about live chat (under an hour old) go straight into that channel;
+jokes about old history from a scan go to the report channel with a link. At most one per server
+every `NSA_QUIP_COOLDOWN_MINUTES` (default 30). Turn off with `NSA_QUIPS=off`. No extra API calls.
+
 ## Scoring
 
 DeepSeek reads messages in batches of up to 40 scored posts per channel and gives each a severity

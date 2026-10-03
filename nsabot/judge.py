@@ -89,6 +89,16 @@ Be funny and roast their otaku behaviour, but do not insult appearance,
 race, gender, or anything other than what they posted. Plain text, no markdown headers."""
 
 
+QUIP_REQUEST = """You may also add a "quip" key to your JSON object: one short joke (max 25 words) the NSA
+analyst blurts out about this stretch of chat, like an awkward undercover agent breaking cover.
+You decide whether the moment calls for it. Only quip when the chat just did something so kimoi,
+absurd or ironic that the agent couldn't stay quiet, and the joke lands on what was actually said.
+Most stretches don't deserve one: if it isn't genuinely funny right now, leave "quip" out. Never
+quip when someone is upset or sharing real bad news. Deadpan, in character; you can name the
+people who posted. No slurs, nothing about appearance, race or gender, nothing sexual about
+minors."""
+
+
 class Truncated(Exception):
     """The model used its whole output budget (usually thinking) before finishing the answer."""
 
@@ -127,18 +137,25 @@ class Judge:
         Returns {index: (severity, reason)} for flagged messages only. Raises on API errors so the
         caller can leave the batch unjudged and retry later.
         """
+        verdicts, _ = await self.judge_with_quip(payload, n, quip=False)
+        return verdicts
+
+    async def judge_with_quip(self, payload: dict, n: int, quip: bool) -> tuple[dict[int, tuple[int, str]], str | None]:
+        """Same as judge(), optionally letting the model add a joke if the moment calls for it (no extra call)."""
+        user = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
+        if quip:  # after the batch, so the system prompt stays a cacheable prefix
+            user.append({"role": "user", "content": QUIP_REQUEST})
         resp = await self._complete(
-            messages=[
-                {"role": "system", "content": JUDGE_PROMPT},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ],
+            messages=[{"role": "system", "content": JUDGE_PROMPT}, *user],
             response_format={"type": "json_object"},
             temperature=0.2,
             max_tokens=2000,
         )
         if resp.choices[0].finish_reason == "length":
             raise Truncated(f"ran out of output tokens on {n} posts")
-        return parse_verdicts(resp.choices[0].message.content or "", n)
+        raw = resp.choices[0].message.content or ""
+        verdicts = parse_verdicts(raw, n)
+        return verdicts, parse_quip(raw) if quip else None
 
     async def roast(self, name: str, stats: str, posts: list[tuple[int, str, str]]) -> str:
         """posts: (severity, text, reason)."""
@@ -187,6 +204,20 @@ def build_payload(channel: dict, timeline, scored_ids: list[int]) -> tuple[dict,
             item["attachments"] = r["extras"][:EXTRAS_CHARS]
         messages.append(item)
     return {"channel": channel, "messages": messages}, order
+
+
+def parse_quip(raw: str) -> str | None:
+    """The optional "quip" from a judge answer, cleaned up for posting."""
+    start, end = raw.find("{"), raw.rfind("}")
+    try:
+        data = json.loads(raw[start : end + 1]) if 0 <= start < end else {}
+    except json.JSONDecodeError:
+        return None
+    quip = data.get("quip") if isinstance(data, dict) else None
+    if not isinstance(quip, str):
+        return None
+    quip = " ".join(quip.split())
+    return quip[:300] or None
 
 
 def parse_verdicts(raw: str, n: int) -> dict[int, tuple[int, str]]:

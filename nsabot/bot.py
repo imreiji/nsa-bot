@@ -7,6 +7,7 @@ import os
 import re
 import time
 from collections import defaultdict
+from datetime import timedelta
 from types import SimpleNamespace
 
 import discord
@@ -42,6 +43,8 @@ QUEUE_TRIGGER = int(os.getenv("NSA_QUEUE_TRIGGER", "40"))
 HEARTBEAT_MINUTES = float(os.getenv("NSA_HEARTBEAT_MINUTES", "10"))
 REPORT_MIN_SEVERITY = int(os.getenv("NSA_REPORT_MIN_SEVERITY", "5"))
 MIN_CHARS = int(os.getenv("NSA_MIN_CHARS", "3"))
+QUIPS = os.getenv("NSA_QUIPS", "on").lower() not in ("off", "0", "false")  # the judge decides when to joke
+QUIP_COOLDOWN = float(os.getenv("NSA_QUIP_COOLDOWN_MINUTES", "30")) * 60  # at most one per server this often
 CONCURRENCY = max(1, int(os.getenv("NSA_CONCURRENCY", "16")))  # DeepSeek calls in flight at once
 CONTEXT_MESSAGES = int(os.getenv("NSA_CONTEXT_MESSAGES", "15"))  # earlier messages shown before each batch
 USER_RATE = int(os.getenv("NSA_USER_RATE", "10"))  # live posts queued per user per minute; extra spam is dropped
@@ -69,6 +72,7 @@ bot = commands.Bot(
 guild_locks: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 watching: dict[int, int] = {}       # guild_id -> report channel id
 spam_limiter = commands.CooldownMapping.from_cooldown(USER_RATE, 60, commands.BucketType.member)
+last_quip: dict[int, float] = {}  # guild_id -> monotonic time of the last posted quip
 background: set[asyncio.Task] = set()  # keep references so tasks aren't garbage-collected
 
 
@@ -195,6 +199,32 @@ class Suspect(commands.Converter):
         return SimpleNamespace(id=row["author_id"], display_name=row["author_name"])
 
 
+def quip_allowed(guild_id: int) -> bool:
+    """Whether the judge may joke right now: quips on and this server's cooldown has passed."""
+    return QUIPS and (guild_id not in last_quip or time.monotonic() - last_quip[guild_id] >= QUIP_COOLDOWN)
+
+
+async def post_quip(guild: discord.Guild, channel_id: int, last_message_id: int, text: str) -> None:
+    """Blurt it into the channel if the chat is live; old history goes to the report channel with a link.
+
+    Parallel batches can each come back with a joke; only the first one after the cooldown is posted.
+    """
+    if not quip_allowed(guild.id):
+        return
+    last_quip[guild.id] = time.monotonic()
+    fresh = discord.utils.utcnow() - discord.utils.snowflake_time(last_message_id) < timedelta(hours=1)
+    try:
+        if fresh and (ch := guild.get_channel_or_thread(channel_id)):
+            await ch.send(f"🕵️ {text}")
+        elif report_ch := guild.get_channel(watching.get(guild.id, 0)):
+            await report_ch.send(f"🕵️ *re: [this]({jump_url(guild.id, channel_id, last_message_id)})* {text}")
+        else:
+            return
+        log.info("quip in %s: %s", channel_id, text)
+    except discord.HTTPException:
+        log.warning("couldn't post a quip in %s", channel_id)
+
+
 # --- pipeline: scrape -> judge -> report ------------------------------------
 
 class Progress:
@@ -283,8 +313,9 @@ async def judge_backlog(guild: discord.Guild, progress=None) -> tuple[int, int]:
             timeline = db.timeline(channel_id, ids[0], ids[-1], before=CONTEXT_MESSAGES)
             payload, order = build_payload(channel_info(guild, channel_id), timeline, ids)
             t0 = time.monotonic()
+            quip = quip_allowed(guild.id)
             try:
-                result = await judge.judge(payload, len(order))
+                result, joke = await judge.judge_with_quip(payload, len(order), quip)
             except Truncated:
                 if len(ids) >= MIN_SPLIT * 2:  # too much to think about at once: retry as two halves
                     half = len(ids) // 2
@@ -306,6 +337,8 @@ async def judge_backlog(guild: discord.Guild, progress=None) -> tuple[int, int]:
                     dead.set()
                 continue
             failed_in_a_row = 0
+            if joke:
+                await post_quip(guild, channel_id, ids[-1], joke)
             db.save_verdicts([(mid, *result.get(i, (0, None))) for i, mid in enumerate(order)])
             judged += len(order)
             flagged += len(result)
