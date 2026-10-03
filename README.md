@@ -158,6 +158,78 @@ and random ones. You answer first, then see the bot's score and labels. Your sco
 - power `/calibration`, a DM report of how far the formula lands from your scores on average, whether
   it's too harsh or too soft, and its worst misses with their labels, so you can see which weight to change
 
+## Agent API (read-only)
+
+Lets trusted agents (e.g. Claude) read the posts the judge ranked, with their context, without
+access to the box or the database. It's off until you create a key.
+
+**Security:** every request needs a key; `.env` stores only each key's SHA-256 hash; per-key rate
+limit (`NSA_API_RATE_PER_MINUTE`, default 60); 10 bad keys from one source locks it out for 10
+minutes; only flagged posts and their context are served (no bulk dump of the chat), only from
+`NSA_GUILD_IDS`, at most 100 posts per page and 30 messages of context; nothing can be written;
+every request is logged with the key's name. Opted-out users are never stored, so never served.
+
+### 1. Make a key per agent
+
+```sh
+python3 -m nsabot.apikey claude        # prints the key (once) and a name:hash line
+```
+
+Put the `name:hash` line in `.env` as `NSA_API_KEYS=claude:<hash>` (comma-separate several), restart
+with `docker compose up -d`, and give the key itself to the agent. To revoke a key, delete its entry
+and restart. The logs show `agent API on for 1 key(s): claude`.
+
+### 2. Reach it
+
+It listens on `127.0.0.1:8787` on the box only. Test from the box:
+
+```sh
+curl -H "Authorization: Bearer nsa_..." http://127.0.0.1:8787/v1/guilds
+```
+
+For agents elsewhere, publish it **over HTTPS only**, through the web server already on the box,
+on its own subdomain (add a DNS record for it first). Caddy:
+
+```
+nsa-api.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+nginx (with a certificate from certbot):
+
+```
+server {
+    listen 443 ssl;
+    server_name nsa-api.example.com;
+    ssl_certificate     /etc/letsencrypt/live/nsa-api.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/nsa-api.example.com/privkey.pem;
+    location / {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_set_header X-Forwarded-For $remote_addr;
+    }
+}
+```
+
+Open port 443 in the Lightsail firewall if it isn't already; never open 8787.
+
+### 3. Endpoints
+
+All `GET`, all JSON, all need `Authorization: Bearer <key>`. `guild` can be left out when the bot
+serves one server.
+
+| Endpoint | Returns |
+|---|---|
+| `/v1/guilds` | Servers the bot serves |
+| `/v1/posts` | Flagged posts. Query: `min_severity` (1-10), `author` (user ID), `channel` (ID), `behaviour` (`unicorn`, `bodily_servitude`, ...), `order` (`severity` or `recent`), `limit` (max 100), `cursor` (from `next_cursor`) |
+| `/v1/posts/{id}` | One flagged post plus `before` (default 15) and `after` (default 5) messages of context, max 30 each |
+| `/v1/leaderboard` | Top users (`limit` max 50) |
+| `/v1/users/{id}` | A user's rank, stats and worst posts |
+| `/v1/scoring` | The formula weights, rubric version and thresholds |
+
+Each post has `id`, `author`, `author_id`, `time`, `channel`, `text`, `reply_to`, `attachments`,
+`severity`, `reason`, `labels`, `tags`, `deleted` (caught by VAR) and `url` (Discord jump link).
+
 ## Setup
 
 ### 1. Discord bot

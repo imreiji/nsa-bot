@@ -90,6 +90,11 @@ TIMELINE = (
     " FROM messages m LEFT JOIN messages r ON r.id = m.reply_to_id"
 )
 
+# Same, plus the verdict columns the API returns.
+API_SELECT = TIMELINE.replace(
+    "SELECT m.id,", "SELECT m.id, m.guild_id, m.channel_id, m.author_id, m.severity, m.reason, m.labels, m.deleted,"
+)
+
 
 @dataclass
 class Message:
@@ -347,6 +352,35 @@ class DB:
             " ORDER BY severity DESC, id DESC LIMIT ?",
             (guild_id, user_id, limit),
         ).fetchall()
+
+    def api_posts(
+        self, guild_id: int, *, min_severity: int = 1, author_id: int | None = None, channel_id: int | None = None,
+        behaviour: str | None = None, order: str = "severity", cursor: tuple[int, int] | None = None, limit: int = 50,
+    ) -> list[sqlite3.Row]:
+        """Flagged posts for the API, keyset-paginated. cursor = (severity, id) of the last row seen."""
+        where, args = ["m.guild_id = ?", "m.severity >= ?"], [guild_id, max(1, min_severity)]
+        if author_id:
+            where.append("m.author_id = ?")
+            args.append(author_id)
+        if channel_id:
+            where.append("m.channel_id = ?")
+            args.append(channel_id)
+        if behaviour:  # validated by the caller against the known behaviour names
+            where.append("m.labels LIKE ?")
+            args.append(f'%"{behaviour}"%')
+        if cursor and order == "severity":
+            where.append("(m.severity < ? OR (m.severity = ? AND m.id < ?))")
+            args += [cursor[0], cursor[0], cursor[1]]
+        elif cursor:
+            where.append("m.id < ?")
+            args.append(cursor[1])
+        sort = "m.severity DESC, m.id DESC" if order == "severity" else "m.id DESC"
+        return self.conn.execute(
+            API_SELECT + " WHERE " + " AND ".join(where) + f" ORDER BY {sort} LIMIT ?", (*args, limit)
+        ).fetchall()
+
+    def api_post(self, message_id: int) -> sqlite3.Row | None:
+        return self.conn.execute(API_SELECT + " WHERE m.id = ?", (message_id,)).fetchone()
 
     def kimoi_posts(
         self, guild_id: int, user_id: int | None = None, offset: int = 0, limit: int = 10

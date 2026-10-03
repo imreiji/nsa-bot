@@ -16,7 +16,7 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from dotenv import load_dotenv
 
-from . import scoring
+from . import api, scoring
 from .db import DB, Message
 from .judge import VAR_NOTE, Judge, Truncated, Verdict, anchors_text, build_payload, message_time
 
@@ -49,6 +49,10 @@ ROAST_PUBLIC = os.getenv("NSA_ROAST_PUBLIC", "off").lower() in ("on", "1", "true
 ROAST_PER_USER_HOUR = int(os.getenv("NSA_ROAST_PER_USER_HOUR", "3"))  # when public; admins are exempt
 DOSSIER_PUBLIC = os.getenv("NSA_DOSSIER_PUBLIC", "on").lower() in ("on", "1", "true")  # let everyone use /dossier
 DOSSIER_PER_USER_HOUR = int(os.getenv("NSA_DOSSIER_PER_USER_HOUR", "3"))
+API_KEYS = api.parse_keys(os.getenv("NSA_API_KEYS", ""))  # agent read API; off without keys
+API_HOST = os.getenv("NSA_API_HOST", "127.0.0.1")
+API_PORT = int(os.getenv("NSA_API_PORT", "8787"))
+API_RATE = int(os.getenv("NSA_API_RATE_PER_MINUTE", "60"))
 RESPOND = os.getenv("NSA_RESPOND", "on").lower()  # on = everyone, admins, off
 RESPOND_PER_USER_HOUR = int(os.getenv("NSA_RESPOND_PER_USER_HOUR", "0"))  # 0 = unlimited
 RESPOND_THINKING = os.getenv("NSA_RESPOND_THINKING", "on").lower() in ("on", "1", "true")
@@ -1359,7 +1363,28 @@ async def sync_slash_commands() -> None:
                         " applications.commands scope; ! commands still work.", guild_id, e)
 
 
-bot.setup_hook = sync_slash_commands
+def channel_name(guild_id: int, channel_id: int) -> str | None:
+    guild = bot.get_guild(guild_id)
+    ch = guild.get_channel_or_thread(channel_id) if guild else None
+    return f"#{ch.name}" if ch else None
+
+
+def guild_name(guild_id: int) -> str | None:
+    guild = bot.get_guild(guild_id)
+    return guild.name if guild else None
+
+
+async def setup() -> None:
+    await sync_slash_commands()
+    if API_KEYS:
+        app = api.build_app(db, API_KEYS, GUILD_IDS, per_minute=API_RATE, channel_name=channel_name,
+                            guild_name=guild_name,
+                            thresholds={"report": REPORT_MIN_SEVERITY, "var": VAR_MIN_SEVERITY})
+        await api.start(app, API_HOST, API_PORT)
+        log.info("agent API on for %d key(s): %s", len(API_KEYS), ", ".join(sorted(API_KEYS.values())))
+
+
+bot.setup_hook = setup
 
 
 @bot.event

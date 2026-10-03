@@ -5,6 +5,9 @@ services:
     env_file: .env
     environment:
       NSA_DB_PATH: /data/nsa.db
+      NSA_API_HOST: 0.0.0.0  # inside the container; the port below is only published on the box's localhost
+    ports:
+      - "127.0.0.1:8787:8787"  # agent API: reachable from this box only (put HTTPS in front to share it)
     volumes:
       - nsa-data:/data
     restart: unless-stopped
