@@ -2,7 +2,6 @@
 
 import asyncio
 import io
-import itertools
 import json
 import logging
 import os
@@ -11,6 +10,7 @@ import time
 from collections import defaultdict, deque
 from datetime import timedelta
 from types import SimpleNamespace
+from typing import Literal
 
 import discord
 from discord import app_commands
@@ -392,18 +392,19 @@ async def scrape(channel: Scannable, opted_out: set[int], progress: Progress | N
     return to_score
 
 
-async def judge_backlog(guild: discord.Guild, progress=None) -> tuple[int, int]:
+async def judge_backlog(guild: discord.Guild, progress=None, max_window: int | None = None) -> tuple[int, int]:
     """Run every queued message through DeepSeek. Returns (judged, flagged).
 
     A pool of CONCURRENCY workers each pulls the next batch as soon as it finishes its last one,
-    so one slow call never holds the others up. Batches are one stretch of one channel.
+    so one slow call never holds the others up. Batches are one stretch of one channel; with
+    max_window, a batch also spans at most that many messages (for scattered posts, so a call
+    doesn't drag in everything between them as context).
     """
     rows = db.unjudged(guild.id)
     batches: asyncio.Queue[tuple[int, list[int]]] = asyncio.Queue()
-    for channel_id, group in itertools.groupby(rows, key=lambda r: r["channel_id"]):
-        ids = [r["id"] for r in group]
-        for i in range(0, len(ids), BATCH_SIZE):
-            batches.put_nowait((channel_id, ids[i : i + BATCH_SIZE]))
+    for batch in evaluate.group_batches([(r["channel_id"], r["id"]) for r in rows], db.count_between,
+                                        BATCH_SIZE, max_window):
+        batches.put_nowait(batch)
     total = len(rows)
     if not total:
         return 0, 0
@@ -695,7 +696,7 @@ async def deleted_by_mod(guild: discord.Guild, channel_id: int, author_id: int) 
     if not guild.me.guild_permissions.view_audit_log:
         if guild.id not in warned_no_audit:
             warned_no_audit.add(guild.id)
-            log.warning("VAR needs View Audit Log in %s to tell self-deletes from mod deletes; skipping", guild.id)
+            log.warning("no View Audit Log in %s: VAR can't spot mod deletes, so it reviews every delete", guild.id)
         return None
     try:
         for wait in (2, 3):  # the audit entry lands a moment after the delete event
@@ -747,10 +748,8 @@ async def var_review(event: discord.RawMessageDeleteEvent):
         author_id = row["author_id"]
     else:
         return  # never saw it, or not worth reviewing
-    by_mod = await deleted_by_mod(guild, cid, author_id)
-    if by_mod is not False:
-        if by_mod:
-            log.info("VAR: message %s was removed by a mod, not reviewing", mid)
+    if await deleted_by_mod(guild, cid, author_id):  # None (can't tell) is reviewed as a self-delete
+        log.info("VAR: message %s was removed by a mod, not reviewing", mid)
         return
     if row is None:  # only in Discord's cache: store it so it has context and a place on the board
         db.save_message(to_row(cached, True, opted_out))
@@ -1060,13 +1059,23 @@ async def calibration(ctx: commands.Context):
     await ctx.send("📬 Report sent to your DMs.", ephemeral=True)
 
 
-@bot.hybrid_command(help="Re-score posts judged under an older rubric (re-runs DeepSeek on them).")
+@bot.hybrid_command(help="Re-judge posts with the current prompt: everything on an older rubric, or only flagged posts.")
+@app_commands.describe(scope="all: every post on an older rubric · flagged: only flagged posts, much cheaper")
 @deployer_only()
-async def rescore(ctx: commands.Context):
-    outdated = db.count_outdated(ctx.guild.id, scoring.RUBRIC_VERSION)
-    if not outdated:
-        await ctx.send(f"Everything is already on rubric v{scoring.RUBRIC_VERSION}.", ephemeral=True)
-        return
+async def rescore(ctx: commands.Context, scope: Literal["all", "flagged"] = "all"):
+    flagged_only = scope == "flagged"
+    pending = db.count_unjudged(ctx.guild.id)  # left over from a rescore cut short: finish those first
+    if flagged_only:
+        outdated = pending or db.count_flagged(ctx.guild.id)
+        if not outdated:
+            await ctx.send("Nothing is flagged yet.", ephemeral=True)
+            return
+    else:
+        outdated = pending + db.count_outdated(ctx.guild.id, scoring.RUBRIC_VERSION)
+        if not outdated:
+            await ctx.send(f"Everything is already on rubric v{scoring.RUBRIC_VERSION}. "
+                           "`/rescore scope:flagged` re-checks the flagged posts anyway.", ephemeral=True)
+            return
     lock = guild_locks[ctx.guild.id]
     if lock.locked():
         await ctx.send("A sweep is already running in this server.", ephemeral=True)
@@ -1074,13 +1083,19 @@ async def rescore(ctx: commands.Context):
     async with lock:
         if ctx.interaction:
             await ctx.send("🔁 Rescore started. Progress below.", ephemeral=True)
-        status = await ctx.channel.send(f"🔁 Re-scoring {outdated:,} posts under rubric v{scoring.RUBRIC_VERSION}…")
-        db.queue_rescore(ctx.guild.id, scoring.RUBRIC_VERSION)
-        judged, flagged = await judge_backlog(ctx.guild, Progress(status))
+        what = ("leftover posts" if pending else "flagged posts") if flagged_only else "posts"
+        status = await ctx.channel.send(f"🔁 Re-scoring {outdated:,} {what} under rubric v{scoring.RUBRIC_VERSION}…")
+        if flagged_only and not pending:
+            db.queue_rescore_flagged(ctx.guild.id)
+        else:
+            db.queue_rescore(ctx.guild.id, scoring.RUBRIC_VERSION)
+        judged, flagged = await judge_backlog(ctx.guild, Progress(status),
+                                              evaluate.MAX_WINDOW if flagged_only else None)
         left = db.count_unjudged(ctx.guild.id)
         log.info("rescore complete: %d judged, %d flagged, %d left", judged, flagged, left)
         await status.edit(content=f"✅ Rescore done: {judged:,} posts re-scored, {flagged:,} kimoi."
-                          + (f" {left:,} still queued (API errors), run `/rescore` or `/scan` again." if left else "")
+                          + (f" {left:,} still queued (API errors), run the same `/rescore` again to finish them."
+                             if left else "")
                           + " Old history isn't re-posted to the report channel.")
 
 

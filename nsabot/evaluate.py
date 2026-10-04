@@ -18,14 +18,17 @@ def load_review_set(path: str = REVIEW_SET) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def group_batches(posts: list[tuple[int, int]], count_between, batch_size: int) -> list[tuple[int, list[int]]]:
+def group_batches(posts: list[tuple[int, int]], count_between, batch_size: int,
+                  max_window: int | None = MAX_WINDOW) -> list[tuple[int, list[int]]]:
     """posts: (channel_id, message_id). Batches stay in one channel, keep at most batch_size posts and
-    span at most MAX_WINDOW messages, so each call reads a real conversation and not a whole channel."""
+    span at most max_window messages (None: no limit), so each call reads a real conversation and
+    not a whole channel."""
     batches: list[tuple[int, list[int]]] = []
     for channel_id, mid in sorted(posts):
         if batches:
             ch, ids = batches[-1]
-            if ch == channel_id and len(ids) < batch_size and count_between(channel_id, ids[0], mid) <= MAX_WINDOW:
+            if (ch == channel_id and len(ids) < batch_size
+                    and (max_window is None or count_between(channel_id, ids[0], mid) <= max_window)):
                 ids.append(mid)
                 continue
         batches.append((channel_id, [mid]))

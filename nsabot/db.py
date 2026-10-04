@@ -250,6 +250,25 @@ class DB:
             )
         return cur.rowcount
 
+    FLAGGED = "(severity > 0 OR labels LIKE '%\"distress\": true%')"  # flagged, or set aside as distress
+
+    def count_flagged(self, guild_id: int) -> int:
+        return self.conn.execute(
+            f"SELECT COUNT(*) FROM messages WHERE guild_id = ? AND scored = 1 AND {self.FLAGGED}", (guild_id,)
+        ).fetchone()[0]
+
+    def queue_rescore_flagged(self, guild_id: int) -> int:
+        """Send only flagged (and distress) posts back to the queue, whatever rubric judged them.
+        The cheap rescore: posts the bot already let through are left alone. Not re-reported."""
+        with self.conn:
+            cur = self.conn.execute(
+                "UPDATE messages SET severity = NULL, reason = NULL, labels = NULL,"
+                " reported = CASE WHEN deleted = 1 THEN reported ELSE 1 END"
+                f" WHERE guild_id = ? AND scored = 1 AND {self.FLAGGED}",
+                (guild_id,),
+            )
+        return cur.rowcount
+
     def calibration_sample(self, guild_id: int, flagged: bool) -> sqlite3.Row | None:
         """A random judged post no admin has scored yet: a flagged one, or any one."""
         return self.conn.execute(

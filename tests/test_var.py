@@ -145,11 +145,12 @@ def test_each_mod_deletion_covers_one_delete(env):
     assert len(env.calls) == 1 and len(env.report.embeds) == 1
 
 
-def test_without_audit_log_access_var_stays_quiet(env):
+def test_without_audit_log_access_var_reviews_every_delete(env):
+    """Can't tell a mod delete from a self-delete, so it treats the delete as the author's own."""
     env.guild.me.guild_permissions.view_audit_log = False
     env.answer(9)
     delete(4)
-    assert env.calls == [] and env.report.embeds == []
+    assert len(env.calls) == 1 and len(env.report.embeds) == 1
 
 
 def test_things_vars_ignores(env):

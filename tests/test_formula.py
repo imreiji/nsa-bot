@@ -31,6 +31,8 @@ GUILD, ADMIN = 10, 1
           sincerity="sincere", doubling_down=True), 10),  # ceiling
     (dict(behaviours=["gachikoi", "spending"], target="real"), 6),  # 4 + real 1 + two behaviours 1
     (dict(behaviours=[]), 0),
+    (dict(behaviours=["life_impact"], target="real", intensity="graphic", sincerity="sincere", spiral=True), 8),  # cap
+    (dict(behaviours=["life_impact"], target="real", sincerity="bit", spiral=True), 6),  # under the cap: unchanged
 ])
 def test_formula(labels, expected):
     assert scoring.score(labels) == expected
@@ -39,7 +41,7 @@ def test_formula(labels, expected):
 def test_messy_labels_fall_back_to_neutral():
     assert scoring.clean({"behaviours": "UNICORN", "target": "alien", "intensity": 7, "doubling_down": "yes"}) == {
         "behaviours": ["unicorn"], "target": "none", "intensity": "clear", "sincerity": "ambiguous",
-        "doubling_down": False, "about_someone_else": False, "distress": False}
+        "doubling_down": False, "about_someone_else": False, "distress": False, "spiral": False}
     assert scoring.describe({"behaviours": ["bodily_servitude"], "target": "real", "sincerity": "sincere"}) \
         == "bodily/servitude · real person · sincere"
 
@@ -48,6 +50,7 @@ def test_formula_text_matches_the_tables():
     text = "\n".join(scoring.formula_lines())
     assert f"stalking/harassment {scoring.BASE['stalking_harassment']}" in text
     assert f"obvious bit {scoring.SINCERITY['bit']}" in text and "always **10**" in text
+    assert f"at most **{scoring.SPIRAL_CAP}**" in text
 
 
 def test_parse_labels_into_formula_scores():
@@ -137,6 +140,30 @@ def test_rescore_requeues_old_rubric_without_reposting():
     assert db.count_unjudged(GUILD) == 2 and db.get_message(3)["severity"] == 8
     db.save_verdicts([(1, 9, "rescored", UNICORN)], scoring.RUBRIC_VERSION)
     assert [r["id"] for r in db.unreported(GUILD, 5)] == [3]  # 1 is old history: not re-posted
+
+
+def test_flagged_rescore_only_requeues_flagged_and_distress_posts():
+    db = DB(":memory:")
+    db.save_batch(50, 5, [Message(i, GUILD, 50, 5, "u", f"p{i}") for i in range(1, 6)])
+    db.save_verdicts([(1, 7, "old"), (2, 0, None)])                       # v1: flagged, clean
+    db.save_verdicts([(3, 8, "new", UNICORN), (4, 0, None),
+                      (5, 0, "distress", {"distress": True})], scoring.RUBRIC_VERSION)
+    assert db.count_flagged(GUILD) == 3
+    assert db.queue_rescore_flagged(GUILD) == 3
+    assert [r["id"] for r in db.unjudged(GUILD)] == [1, 3, 5]  # clean posts keep their verdicts
+    db.save_verdicts([(1, 6, "still", UNICORN), (3, 8, "still", UNICORN)], scoring.RUBRIC_VERSION)
+    assert db.unreported(GUILD, 5) == []  # already-known posts aren't re-posted
+
+
+def test_flagged_rescore_batches_scattered_posts_with_a_short_window(monkeypatch):
+    sent = fake_api(monkeypatch, lambda t: UNICORN if "boyfriend" in t else None)
+    seed([(i, "boyfriend" if i in (1, 400) else "chat") for i in range(1, 401)])
+    b.db.save_verdicts([(i, 8 if i in (1, 400) else 0, "r", UNICORN if i in (1, 400) else None)
+                        for i in range(1, 401)], scoring.RUBRIC_VERSION)
+    b.db.queue_rescore_flagged(GUILD)
+    asyncio.run(b.judge_backlog(guild(), None, b.evaluate.MAX_WINDOW))
+    assert len(sent) == 2  # two calls with their own context, not one call over all 400 messages
+    assert all(len(json.loads(c["messages"][1]["content"])["messages"]) < 30 for c in sent)
 
 
 # --- calibration in DMs ----------------------------------------------------------

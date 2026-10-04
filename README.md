@@ -29,7 +29,7 @@ commands are registered only in the servers in `NSA_GUILD_IDS` when the bot star
 | `/calibrate` / `/calibration` | admin UIDs | Score posts yourself in DMs / DM report comparing the formula with your scores |
 | `/evaluate [limit]` | admin UIDs | Test the current prompt on the reviewed posts, report in DMs (nothing saved) |
 | `/notes [file]` | admin UIDs | Get the judge's server notes in DMs, or replace them with an attached file |
-| `/rescore` | admin UIDs | Re-judge posts scored under an older rubric (re-runs DeepSeek; old history isn't re-posted) |
+| `/rescore [scope]` | admin UIDs | Re-judge posts scored under an older rubric, or with `scope:flagged` only the flagged ones (much cheaper). Re-runs DeepSeek; old history isn't re-posted |
 | `/model` | anyone | Which DeepSeek model and settings the bot uses |
 | `/scoring` | anyone | The scoring formula, thresholds and calibration accuracy |
 | `/dossier [@user]` | everyone (`NSA_DOSSIER_PUBLIC`, 3/hour each; admins unlimited) | Deadpan classified report on their kimoi record |
@@ -120,8 +120,8 @@ report threshold) posts a **📺 VAR REVIEW** to the report channel. It also cou
   repeated deletes by the same mod (same author, same channel) into one entry and bumps its count,
   so the bot tracks counts and treats a new entry *or* a higher count as a mod deletion. Each mod
   deletion covers exactly one delete event. Bulk purges are ignored.
-- Needs **View Audit Log**. Without it VAR stays quiet, since it can't tell a self-delete from a mod
-  removing something.
+- Give it **View Audit Log**. Without it VAR can't spot mod deletions, so it reviews every delete as
+  if the author made it (a mod removing a kimoi post would get a VAR review too).
 - At most `NSA_VAR_PER_USER_HOUR` (default 5) paid reviews per person per hour.
 - Turn off with `NSA_VAR=off`.
 
@@ -143,11 +143,15 @@ DeepSeek doesn't pick numbers. It **labels** each kimoi post, and a fixed formul
 - **target**: real person +1 · **intensity**: passing −1, graphic +1 · **sincerity**: obvious bit −2,
   sincere +1 · **doubling down** +1 · **two or more behaviours** +1
 - kept between 1 and 10; sincere, explicit horny or bodily/servitude content about a minor character is
-  always 10; only pointing at someone else's kimoi, and distress, is 0
+  always 10; an oshi spiral (crying, drinking, not sleeping over a seiyuu) is at most 8; only pointing
+  at someone else's kimoi, and distress, is 0
 
 Labels are stored with every verdict, so changing a weight re-applies to old posts on the next start
 without any API calls. Changing the labels or their definitions in the prompt means bumping
-`RUBRIC_VERSION` and running `/rescore`.
+`RUBRIC_VERSION` and running `/rescore`. `/rescore scope:flagged` re-judges only the posts currently
+flagged (plus ones set aside as distress), whatever rubric judged them: a few hundred posts instead of
+the whole history, for when the prompt or server notes changed. Posts the bot already let through
+keep their verdicts.
 
 A user's leaderboard score is **Σ severity² / 10**, so one 10/10 post outweighs ten 3/10 posts.
 
@@ -157,8 +161,10 @@ The prompt is an ordered checklist: first what is never flagged (distress, point
 else's kimoi, normal fandom, normal life, friend banter between members, racial or ethnic remarks,
 quotes, links and emotes), then **evidence**, then labels. Every flag must quote the exact words
 from the post itself that show the behaviour, and the bot checks the quote really is in the post;
-flags that can't point at the words are dropped. Posts about wanting to die, self-harm or real
-distress score 0, are marked as distress, and are kept out of roasts, dossiers and quips.
+flags that can't point at the words are dropped. Posts about wanting to die or self-harm, joking or
+not, score 0, are marked as distress, and are kept out of roasts, dossiers and quips. An oshi spiral
+(crying, drinking, not sleeping or isolating over a seiyuu) is a running joke here, so it is kimoi,
+but labelled `spiral` and capped at 8.
 
 ### Server notes
 

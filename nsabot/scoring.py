@@ -23,6 +23,7 @@ SINCERITY = {"bit": -2, "ambiguous": 0, "sincere": 1}
 DOUBLING_DOWN = 1
 MULTI_BONUS = 1
 SEXUAL = {"horny", "bodily_servitude"}  # with a minor target, sincere or ambiguous, more than passing: always 10
+SPIRAL_CAP = 8  # an oshi spiral (crying, drinking, not sleeping over a seiyuu) is a server joke, but never a 10
 
 NAMES = {
     "worship": "worship",
@@ -40,6 +41,7 @@ NAMES = {
     "bit": "bit",
     "ambiguous": "ambiguous",
     "sincere": "sincere",
+    "spiral": "oshi spiral",
 }
 
 
@@ -62,6 +64,7 @@ def clean(raw: dict) -> dict:
         "doubling_down": raw.get("doubling_down") is True,
         "about_someone_else": raw.get("about_someone_else") is True,
         "distress": raw.get("distress") is True,
+        "spiral": raw.get("spiral") is True,
     }
 
 
@@ -82,7 +85,7 @@ def score(labels: dict) -> int:
         + (DOUBLING_DOWN if labels["doubling_down"] else 0)
         + (MULTI_BONUS if len(behaviours) > 1 else 0)
     )
-    return max(1, min(10, total))
+    return max(1, min(SPIRAL_CAP if labels["spiral"] else 10, total))
 
 
 def describe(labels: dict | None) -> str:
@@ -99,6 +102,8 @@ def describe(labels: dict | None) -> str:
         parts.append("graphic")
     if labels["doubling_down"]:
         parts.append("doubling down")
+    if labels["spiral"]:
+        parts.append(NAMES["spiral"])
     return " · ".join(parts)
 
 
@@ -115,6 +120,7 @@ def formula_lines() -> list[str]:
         "**Sincerity**: obvious bit " + signed(SINCERITY["bit"]) + ", ambiguous " + signed(SINCERITY["ambiguous"])
         + ", sincere " + signed(SINCERITY["sincere"]),
         f"**Doubling down** {signed(DOUBLING_DOWN)} · **two or more behaviours** {signed(MULTI_BONUS)}",
-        "**Kept between 1 and 10.** Sincere, explicit horny or bodily/servitude content about a minor character is "
-        "always **10**. Only pointing at someone else's kimoi, and anything about self-harm or real distress, is **0**.",
+        f"**Kept between 1 and 10**, and at most **{SPIRAL_CAP}** for an oshi spiral (crying, drinking, not sleeping "
+        "over a seiyuu). Sincere, explicit horny or bodily/servitude content about a minor character is always **10**. "
+        "Only pointing at someone else's kimoi, and anything about wanting to die or self-harm, is **0**.",
     ]
