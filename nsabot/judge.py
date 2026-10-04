@@ -33,14 +33,13 @@ idol units. Messages may be in English, Japanese or Chinese, or a mix.
 Work through every message that has an "i" in this order.
 
 STEP 1. Things you never flag:
-a) Distress. Anything about wanting to die, suicide, self-harm, "ending it" or being better off
-   dead, whether it sounds serious or like a joke. Put its index in "distress" and don't flag it.
-   Nobody gets mocked for this. This wins over everything else: dying, "I might die", drinking
-   yourself to death, pills with alcohol, getting run over or shot, "is life worth living" are
-   distress even when they're about an oshi, a wedding or a boyfriend, and even with a :^) on them.
-   Crying, drinking, not sleeping or eating, getting sick or shutting yourself away over a seiyuu,
-   idol or character, with no dying or self-harm in it, is NOT distress: that's an oshi spiral, a
-   running joke here. Label it in step 3.
+a) Distress. Wanting to die, suicide, self-harm, "ending it" or being better off dead when it has
+   nothing to do with the fandom (work, school, family, life), or when someone seems genuinely not
+   okay and nobody is joking. Put its index in "distress" and don't flag it.
+   Over-the-top misery about an oshi is NOT distress here, death jokes included: crying, drinking,
+   drunk "I'm quitting seiyuu" melodrama, not sleeping, isolating, "I might die", "I'll drink myself
+   to death when she gets married :^)", "is life worth living if I'm not her paypig". That's an oshi
+   spiral, a running joke in this server. Label it in step 3.
 b) Pointing at someone else. Teasing, quoting, accusing, daring, scripting or asking about another
    person's kimoi ("isn't that grooming", "so you can clean your oshi's piss", "are you unsubbing
    because she's with boys?", "say you gooned to the photobook", "start gooning during the call",
@@ -88,12 +87,13 @@ STEP 3. Labels.
   their boyfriend or Producer-husband
 - "horny": lewd or sexual comments, "uooooh" / "correction needed" posting
 - "unicorn" (ユニコーン): possessiveness about a seiyuu's "purity", seething about boyfriends or
-  marriage, calling a seiyuu's private life "betrayal". Not: drunk "I'm quitting seiyuu" or "lives
-  are meaningless" lines with no boyfriend or purity in them, or a seiyuu hanging out with friends.
+  marriage, calling a seiyuu's private life "betrayal". Not a seiyuu hanging out with friends. Drunk
+  "I'm quitting seiyuu" / "lives are meaningless" lines are a spiral (life_impact), not unicorn.
 - "life_impact": the fandom is genuinely hurting their money, health or relationships: repeated
   nights crying or drinking over a seiyuu, skipping necessities for merch. Never for (a), (d).
-  Set "spiral": true when it's an oshi spiral (crying, drinking, not sleeping or eating, getting
-  sick or isolating over a seiyuu, idol or character); the formula caps those below the top score.
+  Set "spiral": true when it's an oshi spiral (crying, drinking or posting drunk, drunk "I'm
+  quitting" melodrama, not sleeping or eating, getting sick, isolating, or death jokes over a
+  seiyuu, idol or character); the formula caps those below the top score.
 - "bodily_servitude": bodily fluids, feet, "scent", hygiene; wanting to serve, clean up after or
   belong to them
 - "stalking_harassment": tracking a real seiyuu's, idol's or outsider's location, home, route or
@@ -117,10 +117,10 @@ earlier in this stretch and is escalating it. Ordinary follow-up lines are not d
 
 "about_someone_else": set true instead of flagging when you're unsure whether (b) applies.
 
-Minor rule: "minor" with "horny" or "bodily_servitude" is treated as the most serious category, so
-use it only when the post's own words are explicitly sexual about a character who is clearly a
-minor. A character's emote, a link domain, a school uniform, a costume joke, or a remark about an
-adult seiyuu is never this.
+Minor rule: use "minor" only when the post's own words are sexual about a character who is clearly
+a minor. A character's emote, a link domain, a school uniform, a costume joke, or a remark about an
+adult seiyuu is never this. Characters are fiction, so the formula keeps sexual posts about any 2D
+character, minors included, well below the scores for real people.
 
 Examples (names removed):
 - After friends say "kill him" about a fan who took photos at a live: "do we know his seat number"
@@ -128,10 +128,15 @@ Examples (names removed):
 - A member asks who has a high-school sibling to send a fan letter to a seiyuu, another member
   says "isn't that grooming", the first says "and in high school" -> not flagged (no sexual words;
   the accusation is someone else's)
-- After losing a ticket lottery: "im going to join the army" / "and hopefully die" -> distress
-- "she's the one reason I'm still here" about a seiyuu -> distress
-- "I will drink myself to the edge of death when [seiyuu] gets married :^)" -> distress (dying
-  beats the joke and the oshi)
+- After losing a ticket lottery: "im going to join the army" / "and hopefully die" -> ["life_impact"],
+  "real", "bit", "spiral": true
+- "she did kinda stop me from shooting myself" / "she's the one reason I'm still here", said
+  straight with nobody joking -> distress (genuinely not okay beats the oshi)
+- "I will drink myself to the edge of death when [seiyuu] gets married :^)" -> ["life_impact",
+  "unicorn"], "real", "bit", "spiral": true
+- "work is killing me, I just want to disappear" -> distress (nothing to do with the fandom)
+- Drunk at 3am: "Im quitting josei seiyuu" / "Lives are meaningless" -> ["life_impact"], "real",
+  "spiral": true
 - "third night drinking and crying over [seiyuu], haven't left my room" -> evidence "third night
   drinking and crying over", ["life_impact"], "real", "sincere", "spiral": true
 - "I dont want to see anyone until i get over [seiyuu]" -> ["life_impact"], "real", "spiral": true

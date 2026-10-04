@@ -17,12 +17,13 @@ BASE = {
     "bodily_servitude": 7,
     "stalking_harassment": 7,
 }
-TARGET = {"real": 1, "character": 0, "minor": 0, "fan": 0, "none": 0}
+TARGET = {"real": 1, "character": 0, "minor": 1, "fan": 0, "none": 0}
 INTENSITY = {"passing": -1, "clear": 0, "graphic": 1}
 SINCERITY = {"bit": -1, "ambiguous": 0, "sincere": 1}
 DOUBLING_DOWN = 1
 MULTI_BONUS = 1
-SEXUAL = {"horny", "bodily_servitude"}  # with a minor target, sincere or ambiguous, more than passing: always 10
+SEXUAL = {"horny", "bodily_servitude"}
+FICTIONAL_SEXUAL_CAP = 7  # horny or bodily stuff about a 2D character (minors included) is fiction: never higher
 SPIRAL_CAP = 8  # an oshi spiral (crying, drinking, not sleeping over a seiyuu) is a server joke, but never a 10
 
 NAMES = {
@@ -74,9 +75,6 @@ def score(labels: dict) -> int:
     behaviours = labels["behaviours"]
     if not behaviours or labels["about_someone_else"] or labels["distress"]:
         return 0
-    if (labels["target"] == "minor" and SEXUAL & set(behaviours)
-            and labels["sincerity"] != "bit" and labels["intensity"] != "passing"):
-        return 10
     total = (
         max(BASE[b] for b in behaviours)
         + TARGET[labels["target"]]
@@ -85,7 +83,12 @@ def score(labels: dict) -> int:
         + (DOUBLING_DOWN if labels["doubling_down"] else 0)
         + (MULTI_BONUS if len(behaviours) > 1 else 0)
     )
-    return max(1, min(SPIRAL_CAP if labels["spiral"] else 10, total))
+    cap = 10
+    if labels["spiral"]:
+        cap = SPIRAL_CAP
+    if labels["target"] in ("character", "minor") and SEXUAL & set(behaviours):
+        cap = min(cap, FICTIONAL_SEXUAL_CAP)
+    return max(1, min(cap, total))
 
 
 def describe(labels: dict | None) -> str:
@@ -115,12 +118,14 @@ def formula_lines() -> list[str]:
     base = ", ".join(f"{NAMES[b]} {v}" for b, v in sorted(BASE.items(), key=lambda kv: kv[1]))
     return [
         f"**Start** (highest behaviour): {base}",
-        f"**Target**: real person {signed(TARGET['real'])}, 2D / another fan {signed(TARGET['character'])}",
+        f"**Target**: real person {signed(TARGET['real'])}, minor character {signed(TARGET['minor'])}, "
+        f"2D / another fan {signed(TARGET['character'])}",
         "**Intensity**: " + ", ".join(f"{k} {signed(v)}" for k, v in INTENSITY.items()),
         "**Sincerity**: obvious bit " + signed(SINCERITY["bit"]) + ", ambiguous " + signed(SINCERITY["ambiguous"])
         + ", sincere " + signed(SINCERITY["sincere"]),
         f"**Doubling down** {signed(DOUBLING_DOWN)} · **two or more behaviours** {signed(MULTI_BONUS)}",
-        f"**Kept between 1 and 10**, and at most **{SPIRAL_CAP}** for an oshi spiral (crying, drinking, not sleeping "
-        "over a seiyuu). Sincere, explicit horny or bodily/servitude content about a minor character is always **10**. "
-        "Only pointing at someone else's kimoi, and anything about wanting to die or self-harm, is **0**.",
+        f"**Kept between 1 and 10**, at most **{SPIRAL_CAP}** for an oshi spiral (crying, drinking, drunk quitting, "
+        f"death jokes over a seiyuu) and at most **{FICTIONAL_SEXUAL_CAP}** for horny or bodily/servitude stuff about "
+        "a 2D character, minors included. Only pointing at someone else's kimoi, and real distress that has nothing "
+        "to do with the fandom, is **0**.",
     ]

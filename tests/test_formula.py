@@ -22,8 +22,11 @@ GUILD, ADMIN = 10, 1
     (dict(behaviours=["bodily_servitude"], target="real", sincerity="bit"), 7),
     (dict(behaviours=["bodily_servitude"], target="real", sincerity="sincere"), 9),
     (dict(behaviours=["unicorn"], target="real", about_someone_else=True), 0),
-    (dict(behaviours=["horny"], target="minor", sincerity="ambiguous", intensity="clear"), 10),
-    (dict(behaviours=["horny"], target="minor", sincerity="bit", intensity="passing"), 3),  # passing joke: no auto-10
+    (dict(behaviours=["horny"], target="minor", sincerity="ambiguous", intensity="clear"), 6),  # 5 + minor 1
+    (dict(behaviours=["bodily_servitude", "horny"], target="minor", intensity="graphic", sincerity="sincere",
+          doubling_down=True), 7),  # fiction: capped at 7, never 10
+    (dict(behaviours=["horny"], target="real", intensity="graphic", sincerity="sincere", doubling_down=True), 9),
+    (dict(behaviours=["horny"], target="minor", sincerity="bit", intensity="passing"), 4),
     (dict(behaviours=["life_impact"], target="real", sincerity="sincere", distress=True), 0),
     (dict(behaviours=["stalking_harassment"], target="real", sincerity="sincere"), 9),  # 7 + real 1 + sincere 1
     (dict(behaviours=["worship"], target="character", intensity="passing", sincerity="bit"), 1),  # floor
@@ -49,7 +52,7 @@ def test_messy_labels_fall_back_to_neutral():
 def test_formula_text_matches_the_tables():
     text = "\n".join(scoring.formula_lines())
     assert f"stalking/harassment {scoring.BASE['stalking_harassment']}" in text
-    assert f"obvious bit {scoring.SINCERITY['bit']}" in text and "always **10**" in text
+    assert f"obvious bit {scoring.SINCERITY['bit']}" in text and f"at most **{scoring.FICTIONAL_SEXUAL_CAP}**" in text
     assert f"at most **{scoring.SPIRAL_CAP}**" in text
 
 
@@ -276,7 +279,7 @@ def test_flags_without_real_evidence_are_dropped():
     ], "distress": [3]})
     texts = ["and in high school", "we dont have to do anything", "she has a bf", "and hopefully die"]
     out = parse_verdicts(raw, 4, texts)
-    assert out[0].severity == 10      # quoted correctly (and sincere): the minor rule still applies
+    assert out[0].severity == 7       # quoted correctly: horny 5 + minor 1 + sincere 1
     assert 1 not in out and 2 not in out
     assert out[3] == Verdict(0, "distress", {"distress": True})
 

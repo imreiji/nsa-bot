@@ -140,11 +140,11 @@ DeepSeek doesn't pick numbers. It **labels** each kimoi post, and a fixed formul
 
 - **behaviours**: worship 2, spending 4, gachikoi 4, horny 5, unicorn 6, life impact 7,
   bodily/servitude 7, stalking/harassment 7 (start from the highest)
-- **target**: real person +1 · **intensity**: passing −1, graphic +1 · **sincerity**: obvious bit −1,
+- **target**: real person +1, minor character +1 · **intensity**: passing −1, graphic +1 · **sincerity**: obvious bit −1,
   sincere +1 · **doubling down** +1 · **two or more behaviours** +1
-- kept between 1 and 10; sincere, explicit horny or bodily/servitude content about a minor character is
-  always 10; an oshi spiral (crying, drinking, not sleeping over a seiyuu) is at most 8; only pointing
-  at someone else's kimoi, and distress, is 0
+- kept between 1 and 10; an oshi spiral (crying, drinking, drunk quitting, death jokes over a seiyuu)
+  is at most 8; horny or bodily/servitude stuff about a 2D character, minors included, is at most 7
+  (it's fiction); only pointing at someone else's kimoi, and real distress outside the fandom, is 0
 
 Labels are stored with every verdict, so changing a weight re-applies to old posts on the next start
 without any API calls. Changing the labels or their definitions in the prompt means bumping
@@ -162,10 +162,11 @@ else's kimoi, normal fandom, normal life, friend banter between members, racial 
 quotes, links and emotes), then **evidence**, then labels. Jokes are still flagged (as a "bit", which
 keeps the score low), and a line that carries on the same author's kimoi burst counts with it. Every flag must quote the exact words
 from the post itself that show the behaviour, and the bot checks the quote really is in the post;
-flags that can't point at the words are dropped. Posts about wanting to die or self-harm, joking or
-not, score 0, are marked as distress, and are kept out of roasts, dossiers and quips. An oshi spiral
-(crying, drinking, not sleeping or isolating over a seiyuu) is a running joke here, so it is kimoi,
-but labelled `spiral` and capped at 8.
+flags that can't point at the words are dropped. An oshi spiral (crying, drinking, drunk "I'm
+quitting seiyuu", isolating, even death jokes over a seiyuu) is a running joke here, so it is kimoi,
+labelled `spiral` and capped at 8. Wanting to die or self-harm that has nothing to do with the
+fandom, or someone who seems genuinely not okay, scores 0, is marked as distress, and is kept out of
+roasts, dossiers and quips.
 
 ### Server notes
 
