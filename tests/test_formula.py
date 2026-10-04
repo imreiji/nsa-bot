@@ -294,3 +294,16 @@ def test_distress_is_stored_as_zero_and_kept_out_of_roasts(monkeypatch):
     row = b.db.get_message(1)
     assert (judged, flagged, row["severity"]) == (2, 0, 0) and json.loads(row["labels"]) == {"distress": True}
     assert [r["content"] for r in b.db.recent_posts(GUILD, 5)] == ["good morning"]
+
+
+def test_hard_distress_words_override_a_spiral_flag():
+    spiral = {"evidence": "", "behaviours": ["life_impact"], "target": "real", "sincerity": "bit", "spiral": True}
+    texts = ["then me and xinlin will commit a lovers suicide", "Kan i need you to end me by lethal injection",
+             "im running out of reasons to live", "i will drink myself to the edge of death when she gets married",
+             "if nari told me to shoot myself"]
+    raw = json.dumps({"flagged": [dict(spiral, i=i, evidence=t) for i, t in enumerate(texts)]})
+    out = parse_verdicts(raw, len(texts), texts)
+    assert [out[i].labels.get("distress", False) for i in range(5)] == [True, True, True, False, False]
+    assert out[3].severity > 0 and out[4].severity > 0  # oshi death jokes stay spirals
+    from nsabot.judge import hard_distress
+    assert not hard_distress("i already said i plan to spend my life alone") and not hard_distress("the weekend me")

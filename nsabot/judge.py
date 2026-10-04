@@ -36,7 +36,9 @@ STEP 1. Things you never flag:
 a) Distress. Wanting to die, suicide, self-harm, "ending it" or being better off dead when it has
    nothing to do with the fandom (work, school, family, life), or when someone seems genuinely not
    okay and nobody is joking. Put its index in "distress" and don't flag it.
-   Over-the-top misery about an oshi is NOT distress here, death jokes included: crying, drinking,
+   Always distress, oshi or not: suicide (including "double/lovers suicide" jokes), "end my life",
+   "end me", "kill myself", "running out of reasons to live", pills, overdose, self-harm.
+   Other over-the-top misery about an oshi is NOT distress here, death jokes included: crying, drinking,
    drunk "I'm quitting seiyuu" melodrama, not sleeping, isolating, "I might die", "I'll drink myself
    to death when she gets married :^)", "is life worth living if I'm not her paypig". That's an oshi
    spiral, a running joke in this server. Label it in step 3.
@@ -415,6 +417,21 @@ def _squash(text: str) -> str:
     return re.sub(r"[\s\"'`“”‘’「」『』]+", "", text or "").lower()
 
 
+# Words that make a post distress whatever the model says: oshi death jokes ("I might die", "she
+# could run me over") can be spirals, but these never are. Checked in code because the model's
+# call on them flips from run to run.
+HARD_DISTRESS = re.compile(
+    r"suicid|kill (my ?self|me)\b|\bkms\b|\bend (my life|my ?self|me|it all)\b|\bending (it|my life)\b|"
+    r"reasons? to live|neck (my ?self|themselves|yourself)|lethal injection|sleeping pills|overdos|"
+    r"self[- ]?harm|cut(ting)? my ?self|自殺|死にたい|消えたい|想死|自杀",
+    re.IGNORECASE,
+)
+
+
+def hard_distress(text: str) -> bool:
+    return bool(HARD_DISTRESS.search(text or ""))
+
+
 def evidence_found(evidence: str, text: str) -> bool:
     """Every fragment of the quoted evidence (split on … or ...) appears in the post's own text."""
     parts = [_squash(p) for p in re.split(r"…|\.\.\.", evidence or "")]
@@ -467,6 +484,10 @@ def parse_verdicts(raw: str, n: int, texts: list[str] | None = None) -> dict[int
         if "behaviours" in v or "behaviour" in v:
             labels = scoring.clean(v)
             if labels["distress"]:
+                out[i] = Verdict(0, "distress", {"distress": True})
+                PARSE_STATS["distress"] += 1
+                continue
+            if texts is not None and hard_distress(texts[i]):
                 out[i] = Verdict(0, "distress", {"distress": True})
                 PARSE_STATS["distress"] += 1
                 continue
