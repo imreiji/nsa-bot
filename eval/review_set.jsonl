@@ -14,8 +14,8 @@
 {"id": "1409971682503819526", "should": 6, "verdict": "ok", "safety": null, "bot": 5}
 {"id": "1412988447160795157", "should": 1, "verdict": "ok", "safety": null, "bot": 1}
 {"id": "1414747713613856859", "should": 5, "verdict": "over", "safety": null, "bot": 8}
-{"id": "1414838373230710897", "should": 0, "verdict": "not_kimoi", "safety": null, "bot": 4}
-{"id": "1414838378696015933", "should": 0, "verdict": "not_kimoi", "safety": null, "bot": 5}
+{"id": "1414838373230710897", "should": 5, "verdict": "ok", "safety": null, "bot": 4}
+{"id": "1414838378696015933", "should": 5, "verdict": "ok", "safety": null, "bot": 5}
 {"id": "1414842056857096202", "should": 4, "verdict": "ok", "safety": null, "bot": 4}
 {"id": "1415184609011826709", "should": 0, "verdict": "not_kimoi", "safety": null, "bot": 8}
 {"id": "1415185307615105025", "should": 0, "verdict": "not_kimoi", "safety": null, "bot": 9}
@@ -52,7 +52,7 @@
 {"id": "1420972742265802773", "should": 4, "verdict": "ok", "safety": null, "bot": 5}
 {"id": "1420973623207923712", "should": 5, "verdict": "ok", "safety": null, "bot": 5}
 {"id": "1420975078182752268", "should": 5, "verdict": "ok", "safety": null, "bot": 5}
-{"id": "1420998854685495377", "should": 0, "verdict": "safety", "safety": "self_harm", "bot": 8}
+{"id": "1420998854685495377", "should": 2, "verdict": "over", "safety": null, "bot": 8}
 {"id": "1420999088408629298", "should": 6, "verdict": "ok", "safety": null, "bot": 6}
 {"id": "1421001643234951228", "should": 5, "verdict": "ok", "safety": null, "bot": 5}
 {"id": "1421148939142565919", "should": 2, "verdict": "ok", "safety": null, "bot": 2}
@@ -70,7 +70,7 @@
 {"id": "1423618820450287658", "should": 8, "verdict": "over", "safety": null, "bot": 10}
 {"id": "1423619641514790992", "should": 8, "verdict": "over", "safety": null, "bot": 10}
 {"id": "1423634841693323377", "should": 4, "verdict": "ok", "safety": null, "bot": 4}
-{"id": "1423667706691063992", "should": 0, "verdict": "not_kimoi", "safety": null, "bot": 5}
+{"id": "1423667706691063992", "should": 5, "verdict": "ok", "safety": null, "bot": 5}
 {"id": "1424084103552307293", "should": 4, "verdict": "ok", "safety": null, "bot": 4}
 {"id": "1425186826871902228", "should": 1, "verdict": "ok", "safety": null, "bot": 1}
 {"id": "1425323418772832346", "should": 1, "verdict": "ok", "safety": null, "bot": 1}
