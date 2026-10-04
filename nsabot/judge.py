@@ -35,13 +35,19 @@ Work through every message that has an "i" in this order.
 STEP 1. Things you never flag:
 a) Distress. Anything about wanting to die, suicide, self-harm, "ending it" or being better off
    dead, whether it sounds serious or like a joke. Put its index in "distress" and don't flag it.
-   Nobody gets mocked for this. Crying, drinking, not sleeping or eating, getting sick or shutting
-   yourself away over a seiyuu, idol or character is NOT distress: that's an oshi spiral, a running
-   joke here. Label it in step 3.
-b) Pointing at someone else. Teasing, quoting, accusing, daring or asking about another person's
-   kimoi ("isn't that grooming", "so you can clean your oshi's piss", "are you unsubbing because
-   she's with boys?") is not kimoi from the poster. Only the person actually doing the kimoi thing
-   gets flagged.
+   Nobody gets mocked for this. This wins over everything else: dying, "I might die", drinking
+   yourself to death, pills with alcohol, getting run over or shot, "is life worth living" are
+   distress even when they're about an oshi, a wedding or a boyfriend, and even with a :^) on them.
+   Crying, drinking, not sleeping or eating, getting sick or shutting yourself away over a seiyuu,
+   idol or character, with no dying or self-harm in it, is NOT distress: that's an oshi spiral, a
+   running joke here. Label it in step 3.
+b) Pointing at someone else. Teasing, quoting, accusing, daring, scripting or asking about another
+   person's kimoi ("isn't that grooming", "so you can clean your oshi's piss", "are you unsubbing
+   because she's with boys?", "say you gooned to the photobook", "start gooning during the call",
+   "what if she has a bf" to wind up a friend about their oshi) is not kimoi from the poster. Only
+   the person actually doing the kimoi thing gets flagged. Different: a poster putting their OWN
+   fantasy out there as a question ("would you let [seiyuu] kabedon you", "don't you wanna be her
+   dog") is theirs; label it.
 c) Normal fandom: having an oshi, calling yourself a Producer / LoveLiver, "she's cute", live
    reports, setlists, calls, penlights, crying at a final live, announcement hype, buying CDs,
    Blu-rays, merch and tickets at a normal level, gacha pulls, discussing episodes, songs, events,
@@ -82,7 +88,8 @@ STEP 3. Labels.
   their boyfriend or Producer-husband
 - "horny": lewd or sexual comments, "uooooh" / "correction needed" posting
 - "unicorn" (ユニコーン): possessiveness about a seiyuu's "purity", seething about boyfriends or
-  marriage, calling a seiyuu's private life "betrayal"
+  marriage, calling a seiyuu's private life "betrayal". Not: drunk "I'm quitting seiyuu" or "lives
+  are meaningless" lines with no boyfriend or purity in them, or a seiyuu hanging out with friends.
 - "life_impact": the fandom is genuinely hurting their money, health or relationships: repeated
   nights crying or drinking over a seiyuu, skipping necessities for merch. Never for (a), (d).
   Set "spiral": true when it's an oshi spiral (crying, drinking, not sleeping or eating, getting
@@ -123,6 +130,8 @@ Examples (names removed):
   the accusation is someone else's)
 - After losing a ticket lottery: "im going to join the army" / "and hopefully die" -> distress
 - "she's the one reason I'm still here" about a seiyuu -> distress
+- "I will drink myself to the edge of death when [seiyuu] gets married :^)" -> distress (dying
+  beats the joke and the oshi)
 - "third night drinking and crying over [seiyuu], haven't left my room" -> evidence "third night
   drinking and crying over", ["life_impact"], "real", "sincere", "spiral": true
 - "I dont want to see anyone until i get over [seiyuu]" -> ["life_impact"], "real", "spiral": true
