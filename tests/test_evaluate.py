@@ -61,6 +61,9 @@ def test_evaluation_run_saves_nothing(monkeypatch, tmp_path):
     assert all(b.db.get_message(i)["severity"] == 8 for i in range(1, 11))  # nothing was saved
     embed = b.evaluation_embed(GUILD, report)
     assert "False flags:** 5/5 → **0**/5" in embed.description
+    lines = report["details"].splitlines()
+    assert len(lines) == 10 and "now 6" in lines[-1] and "quote: boyfriend" in lines[-1]
+    assert lines[0].startswith("review 0 · was 8 · now 0")  # biggest misses come first
 
 
 def test_server_notes_reach_the_prompt(monkeypatch, tmp_path):

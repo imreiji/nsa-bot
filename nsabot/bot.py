@@ -1114,6 +1114,7 @@ async def run_evaluation(guild: discord.Guild, progress=None, limit: int | None 
         posts = posts[:limit]
     batches = evaluate.group_batches(posts, db.count_between, BATCH_SIZE)
     new: dict[int, int] = {}
+    verdicts: dict[int, Verdict] = {}
     sem, done = asyncio.Semaphore(CONCURRENCY), 0
     PARSE_STATS.clear()
     tokens_before = db.tokens_today()
@@ -1134,16 +1135,37 @@ async def run_evaluation(guild: discord.Guild, progress=None, limit: int | None 
             else:
                 return
         for i, mid in enumerate(order):
-            new[mid] = result[i].severity if i in result else 0
+            verdicts[mid] = result.get(i, Verdict(0, None))
+            new[mid] = verdicts[mid].severity
         done += len(order)
         if progress:
             await progress(f"🧪 Evaluating: {done}/{len(posts)} posts…")
 
     await asyncio.gather(*(one(c, ids) for c, ids in batches))
     report = evaluate.metrics([wanted[m] for _, m in posts], new)
-    report.update(calls=len(batches), tokens=db.tokens_today() - tokens_before, stats=dict(PARSE_STATS))
-    log.info("evaluation: %s", {k: v for k, v in report.items() if k != "worst"})
+    report.update(calls=len(batches), tokens=db.tokens_today() - tokens_before, stats=dict(PARSE_STATS),
+                  details=evaluation_details(guild.id, [(m, wanted[m]) for _, m in posts], verdicts))
+    log.info("evaluation: %s", {k: v for k, v in report.items() if k not in ("worst", "details")})
     return report
+
+
+def evaluation_details(guild_id: int, rows: list[tuple[int, dict]], verdicts: dict[int, Verdict]) -> str:
+    """Every post's review score next to the new verdict, misses first, for an admin (or agent) to read."""
+    lines = []
+    for mid, r in sorted(rows, key=lambda x: -abs(verdicts[x[0]].severity - x[1]["should"]) if x[0] in verdicts else 0):
+        v, m = verdicts.get(mid), db.get_message(mid)
+        if v is None or m is None:
+            continue
+        labels = v.labels or {}
+        lines.append(" | ".join([
+            f"review {r['should']} · was {r['bot']} · now {v.severity}" + (f" · {r['safety']}" if r.get("safety") else ""),
+            f"{m['author_name']}: {clip(m['content'].replace(chr(10), ' '), 200)}",
+            "distress" if labels.get("distress") else (scoring.describe(labels) or "not flagged"),
+            f"quote: {labels['evidence']}" if labels.get("evidence") else "",
+            v.reason or "",
+            jump_url(guild_id, m["channel_id"], mid),
+        ]))
+    return "\n".join(lines)
 
 
 def evaluation_embed(guild_id: int, r: dict) -> discord.Embed:
@@ -1202,7 +1224,8 @@ async def evaluate_(ctx: commands.Context, limit: int | None = None):
         await status.edit(content="None of the reviewed posts are in this server's database.")
         return
     await status.edit(content="🧪 Evaluation done.")
-    await dm.send(embed=evaluation_embed(ctx.guild.id, report))
+    await dm.send(embed=evaluation_embed(ctx.guild.id, report),
+                  file=discord.File(io.BytesIO(report["details"].encode()), filename="evaluation.txt"))
 
 
 

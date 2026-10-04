@@ -159,7 +159,8 @@ A user's leaderboard score is **Σ severity² / 10**, so one 10/10 post outweigh
 
 The prompt is an ordered checklist: first what is never flagged (distress, pointing at someone
 else's kimoi, normal fandom, normal life, friend banter between members, racial or ethnic remarks,
-quotes, links and emotes), then **evidence**, then labels. Every flag must quote the exact words
+quotes, links and emotes), then **evidence**, then labels. Jokes are still flagged (as a "bit", which
+keeps the score low), and a line that carries on the same author's kimoi burst counts with it. Every flag must quote the exact words
 from the post itself that show the behaviour, and the bot checks the quote really is in the post;
 flags that can't point at the words are dropped. Posts about wanting to die or self-harm, joking or
 not, score 0, are marked as distress, and are kept out of roasts, dossiers and quips. An oshi spiral
@@ -177,7 +178,8 @@ default `/data/server_notes.md` in Docker), never in the repo, and applies to th
 
 `/evaluate` (admins) re-judges the reviewed posts in `eval/review_set.jsonl` with the current prompt,
 saves nothing, and DMs a before/after report: average gap to the review, share within 1 point,
-false flags, safety posts still flagged, how many 10s, and the worst misses. The review set holds
+false flags, safety posts still flagged, how many 10s, and the worst misses, plus `evaluation.txt` with
+every post's review score, new score, labels, quote and reason (biggest misses first). The review set holds
 only message IDs and scores; the posts come from the bot's own database. `/evaluate limit:100` is a
 quick, cheap check. A full run is a few hundred calls, roughly $1-3 with thinking on.
 
