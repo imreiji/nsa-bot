@@ -136,6 +136,8 @@ Examples (names removed):
 - Teasing a friend: "so you can clean your oshi's piss" -> not flagged (b)
 - A cunnyx.com link to a seiyuu's tweet -> not flagged (g)
 - A character's drool emote under a burger photo -> not flagged (g)
+- "I already had the bukkake with [name] yesterday" about udon -> not flagged (a dish, not a pun
+  to hunt for; food and menu names are never kimoi on their own)
 - "I would throw away all my money just to talk to [seiyuu] for 10 seconds" -> evidence "throw
   away all my money just to talk to", behaviours ["spending", "gachikoi"], target "real"
 - "she has a boyfriend?? I can never forgive this betrayal" with nobody laughing -> evidence "I can

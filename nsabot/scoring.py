@@ -19,7 +19,7 @@ BASE = {
 }
 TARGET = {"real": 1, "character": 0, "minor": 0, "fan": 0, "none": 0}
 INTENSITY = {"passing": -1, "clear": 0, "graphic": 1}
-SINCERITY = {"bit": -2, "ambiguous": 0, "sincere": 1}
+SINCERITY = {"bit": -1, "ambiguous": 0, "sincere": 1}
 DOUBLING_DOWN = 1
 MULTI_BONUS = 1
 SEXUAL = {"horny", "bodily_servitude"}  # with a minor target, sincere or ambiguous, more than passing: always 10

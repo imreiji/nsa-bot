@@ -19,11 +19,11 @@ GUILD, ADMIN = 10, 1
 @pytest.mark.parametrize("labels,expected", [
     (dict(behaviours=["spending"], target="real", sincerity="sincere"), 6),
     (dict(behaviours=["life_impact"], target="real", intensity="graphic", sincerity="sincere"), 10),
-    (dict(behaviours=["bodily_servitude"], target="real", sincerity="bit"), 6),
+    (dict(behaviours=["bodily_servitude"], target="real", sincerity="bit"), 7),
     (dict(behaviours=["bodily_servitude"], target="real", sincerity="sincere"), 9),
     (dict(behaviours=["unicorn"], target="real", about_someone_else=True), 0),
     (dict(behaviours=["horny"], target="minor", sincerity="ambiguous", intensity="clear"), 10),
-    (dict(behaviours=["horny"], target="minor", sincerity="bit", intensity="passing"), 2),  # passing joke: no auto-10
+    (dict(behaviours=["horny"], target="minor", sincerity="bit", intensity="passing"), 3),  # passing joke: no auto-10
     (dict(behaviours=["life_impact"], target="real", sincerity="sincere", distress=True), 0),
     (dict(behaviours=["stalking_harassment"], target="real", sincerity="sincere"), 9),  # 7 + real 1 + sincere 1
     (dict(behaviours=["worship"], target="character", intensity="passing", sincerity="bit"), 1),  # floor
@@ -32,7 +32,7 @@ GUILD, ADMIN = 10, 1
     (dict(behaviours=["gachikoi", "spending"], target="real"), 6),  # 4 + real 1 + two behaviours 1
     (dict(behaviours=[]), 0),
     (dict(behaviours=["life_impact"], target="real", intensity="graphic", sincerity="sincere", spiral=True), 8),  # cap
-    (dict(behaviours=["life_impact"], target="real", sincerity="bit", spiral=True), 6),  # under the cap: unchanged
+    (dict(behaviours=["life_impact"], target="real", sincerity="bit", spiral=True), 7),  # under the cap: unchanged
 ])
 def test_formula(labels, expected):
     assert scoring.score(labels) == expected

@@ -140,7 +140,7 @@ DeepSeek doesn't pick numbers. It **labels** each kimoi post, and a fixed formul
 
 - **behaviours**: worship 2, spending 4, gachikoi 4, horny 5, unicorn 6, life impact 7,
   bodily/servitude 7, stalking/harassment 7 (start from the highest)
-- **target**: real person +1 · **intensity**: passing −1, graphic +1 · **sincerity**: obvious bit −2,
+- **target**: real person +1 · **intensity**: passing −1, graphic +1 · **sincerity**: obvious bit −1,
   sincere +1 · **doubling down** +1 · **two or more behaviours** +1
 - kept between 1 and 10; sincere, explicit horny or bodily/servitude content about a minor character is
   always 10; an oshi spiral (crying, drinking, not sleeping over a seiyuu) is at most 8; only pointing
