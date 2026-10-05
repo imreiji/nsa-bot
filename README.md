@@ -24,7 +24,7 @@ commands are registered only in the servers in `NSA_GUILD_IDS` when the bot star
 | Command | Who | What |
 |---|---|---|
 | `/watch #channel` / `/unwatch` | admin UIDs | Start / stop live surveillance and set the report channel |
-| `/scan [channel]` / `/scanall` | admin UIDs | Judge history of a channel, voice chat or thread (default: current) / of everything |
+| `/scan [channel] [recent]` / `/scanall [recent]` | admin UIDs | Judge history of a channel, voice chat or thread (default: current) / of everything. `recent:N` reads only the latest N messages (per channel) and leaves the scan position alone, so a later full scan still covers older history; posts already judged keep their scores |
 | `/usage` | admin UIDs | DeepSeek tokens used today, queue size |
 | `/calibrate` / `/calibration` | admin UIDs | Score posts yourself in DMs / DM report comparing the formula with your scores |
 | `/evaluate [limit]` | admin UIDs | Test the current prompt on the reviewed posts, report in DMs (nothing saved) |

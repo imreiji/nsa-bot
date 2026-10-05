@@ -458,6 +458,19 @@ class Progress:
 Scannable = discord.TextChannel | discord.VoiceChannel | discord.StageChannel | discord.Thread
 
 
+async def scrape_recent(channel: Scannable, opted_out: set[int], count: int) -> int:
+    """Pull only the channel's latest `count` messages, leaving its scan cursor where it was, so a
+    later full /scan still reads the older history. Posts already on file keep their verdicts."""
+    log.info("reading the latest %d messages of #%s", count, channel.name)
+    rows = [to_row(m, scored, opted_out) async for m in channel.history(limit=count)
+            if (scored := classify(m, opted_out)) is not None]
+    rows.reverse()
+    known = db.images_for([r.id for r in rows]) if rows else {}
+    new = [r for r in rows if r.id not in known]
+    db.save_messages(new)
+    return sum(r.scored for r in new)
+
+
 async def scrape(channel: Scannable, opted_out: set[int], progress: Progress | None = None) -> int:
     """Pull messages newer than the channel's cursor (oldest first), up to SCAN_LIMIT.
 
@@ -884,7 +897,7 @@ async def var_review(event: discord.RawMessageDeleteEvent):
 
 # --- commands ---------------------------------------------------------------
 
-async def run_scan(ctx: commands.Context, channels: list[discord.abc.Messageable]) -> None:
+async def run_scan(ctx: commands.Context, channels: list[discord.abc.Messageable], recent: int | None = None) -> None:
     lock = guild_locks[ctx.guild.id]
     if lock.locked():
         await ctx.send("A surveillance sweep is already running in this server.")
@@ -898,7 +911,7 @@ async def run_scan(ctx: commands.Context, channels: list[discord.abc.Messageable
         scraped = 0
         for ch in channels:
             try:
-                scraped += await scrape(ch, opted_out, progress)
+                scraped += await (scrape_recent(ch, opted_out, recent) if recent else scrape(ch, opted_out, progress))
             except discord.Forbidden:
                 log.warning("no permission to read #%s", ch.name)
                 await ctx.send(f"No clearance for {ch.mention}, skipping.")
@@ -918,25 +931,27 @@ async def run_scan(ctx: commands.Context, channels: list[discord.abc.Messageable
 
 
 @bot.hybrid_command(help="Scan a channel's history for kimoi posts (default: this one). Voice chats and threads work too.")
-@app_commands.describe(channel="Channel, voice chat or thread to scan (default: this one)")
+@app_commands.describe(channel="Channel, voice chat or thread to scan (default: this one)",
+                       recent="Only the latest N messages (default: everything new since the last scan)")
 @deployer_only()
-async def scan(ctx: commands.Context, channel: Scannable = None):
+async def scan(ctx: commands.Context, channel: Scannable = None, recent: commands.Range[int, 1, 10000] = None):
     target = channel or ctx.channel
     if not watchable(ctx.guild.id, target.id):
         await ctx.send("That channel is off-limits (the report channel or an ignored channel).", ephemeral=True)
         return
-    await run_scan(ctx, [target])
+    await run_scan(ctx, [target], recent)
 
 
 @bot.hybrid_command(help="Scan every text channel and voice/stage chat the bot can read.")
+@app_commands.describe(recent="Only the latest N messages of each channel (default: everything new since the last scan)")
 @deployer_only()
-async def scanall(ctx: commands.Context):
+async def scanall(ctx: commands.Context, recent: commands.Range[int, 1, 10000] = None):
     me = ctx.guild.me
     channels = [
         c for c in [*ctx.guild.text_channels, *ctx.guild.voice_channels, *ctx.guild.stage_channels]
         if c.permissions_for(me).read_message_history and watchable(ctx.guild.id, c.id)
     ]
-    await run_scan(ctx, channels)
+    await run_scan(ctx, channels, recent)
 
 
 @bot.hybrid_command(help="Start live surveillance, posting kimoi to the given report channel.")

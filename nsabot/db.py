@@ -163,6 +163,11 @@ class DB:
                 (channel_id, last_id),
             )
 
+    def save_messages(self, messages: list[Message]) -> None:
+        """Store messages without moving the channel's scan cursor (for /scan recent:N)."""
+        with self.conn:
+            self.conn.executemany(INSERT, [m.params() for m in messages])
+
     def save_message(self, m: Message) -> None:
         with self.conn:
             self.conn.execute(INSERT, m.params())

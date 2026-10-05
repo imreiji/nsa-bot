@@ -239,3 +239,31 @@ def test_expired_picture_links_are_refreshed_once(monkeypatch):
     assert asyncio.run(b.batch_images(NS(), 50, [1])) == [(0, "data:image/png;base64,AAAA")] and calls == [1]
     monkeypatch.setattr(b, "IMAGES", False)
     assert asyncio.run(b.batch_images(NS(), 50, [1])) == []
+
+
+def test_scan_recent_reads_only_the_latest_and_keeps_the_cursor():
+    b.db.conn.execute("DELETE FROM messages")
+    b.db.conn.execute("DELETE FROM cursors")
+    b.db.save_messages([row(7, text="already judged")])
+    b.db.save_verdicts([(7, 4, "old")], 3)
+    msgs = [NS(id=i, content=f"post {i}", clean_content=f"post {i}", author=NS(id=5, bot=False, display_name="u"),
+               attachments=[], stickers=[], embeds=[], reference=None, guild=NS(id=GUILD), channel=NS(id=50))
+            for i in range(1, 11)]
+
+    class Channel:
+        id, name = 50, "general"
+
+        async def history(self, limit):
+            for m in reversed(msgs[-limit:]):  # newest first, like Discord
+                yield m
+
+    queued = asyncio.run(b.scrape_recent(Channel(), set(), 4))
+    assert queued == 3  # 8, 9, 10 are new; 7 is already on file
+    assert b.db.get_message(7)["severity"] == 4 and b.db.get_message(6) is None
+    assert b.db.get_cursor(50) is None  # a later full /scan still reads the older history
+
+
+def test_scan_has_a_recent_option():
+    options = {p.name: p for p in b.bot.tree.get_command("scan").parameters}
+    assert options["recent"].min_value == 1 and not options["recent"].required
+    assert "recent" in {p.name for p in b.bot.tree.get_command("scanall").parameters}
