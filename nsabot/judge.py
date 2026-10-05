@@ -66,11 +66,12 @@ e) Friend banter that isn't otaku behaviour: members roasting or digging into EA
 f) Racial, ethnic or nationality remarks. Not kimoi; never put them on someone's record.
 g) Things that aren't the poster's own words or behaviour: quotes, copypasta, song lyrics,
    translations of a seiyuu's posts, shared official art, a link (link-fixer domains such as
-   cunnyx.com or fxtwitter mean nothing), a bare emote or sticker.
+   cunnyx.com or fxtwitter mean nothing), a bare emote or sticker. For pictures, see IMAGES.
 
 STEP 2. Evidence. For anything left, copy the exact words FROM THIS MESSAGE'S OWN "text" that show
 the kimoi behaviour (max 15 words, copied character for character, no paraphrase, not from other
-messages, replies or attachments).
+messages, replies or attachments). If the kimoi is in a picture the message itself carries (see
+IMAGES), the evidence is "[image]".
 People often post one thought as a burst of short lines. A line that carries on the SAME author's
 kimoi train of thought counts as part of it, even if it looks harmless alone: "Ceiling too" after
 their "cover my walls with her magazines", "IT HAS A GAP" while they gush about a seiyuu's skirt,
@@ -163,13 +164,22 @@ Examples (names removed):
 - "I'd happily clean up after her, even her vomit" about a seiyuu, said straight -> evidence
   "clean up after her, even her vomit", ["bodily_servitude"], "real", "sincere"
 
+IMAGES. A message with "images": N comes with N pictures after the JSON, each labelled with its
+"i". Judge what the poster chose to share, together with what they say about it:
+- kimoi: lewd art or doujin pages ("horny"; "minor" only if the character is clearly a minor),
+  creepshot-style crops of a seiyuu's legs, chest or feet, a shrine or a pile of dozens of the same
+  merch ("spending"/"worship")
+- not kimoi on their own: official art and visuals, screenshots of announcements or chats, memes,
+  live photos, food, ordinary merch hauls, game pulls
+Pictures in messages without an "i" aren't sent.
+
 Input: one JSON object for a stretch of one channel:
 {"channel": {"name": "#...", "topic": "...", "nsfw": false},
  "messages": [{"i": 0, "author": "...", "time": "YYYY-MM-DD HH:MM UTC", "text": "...",
                "reply_to": {"author": "...", "text": "..."}, "attachments": "..."}, ...]}
 Messages are in chronological order. ONLY messages with an "i" are to be labelled. Messages without
-"i" are context. "time" shows gaps: a message hours later may start a new topic. "attachments" only
-names files, stickers and link previews; you can't see images. In an NSFW channel, lewd posts about
+"i" are context. "time" shows gaps: a message hours later may start a new topic. "attachments"
+names files, stickers and link previews; you only see the pictures sent after the JSON. In an NSFW channel, lewd posts about
 adult characters are expected: use "passing" or "bit" unless they go further.
 
 Reply with a JSON object:
@@ -291,14 +301,29 @@ class Judge:
         return verdicts
 
     async def judge_with_quip(
-        self, payload: dict, n: int, quip: bool, note: str | None = None, anchors: str | None = None
+        self, payload: dict, n: int, quip: bool, note: str | None = None, anchors: str | None = None,
+        images: list[tuple[int, str]] | None = None,
     ) -> tuple[dict[int, Verdict], str | None]:
         """Same as judge(), optionally letting the model add a joke if the moment calls for it (no extra call).
 
         note: extra instructions for this call only (e.g. VAR_NOTE), sent after the batch.
         anchors: calibration examples from this server, appended to the system prompt.
+        images: (index, image URL or data: URL) for scored messages' pictures, sent after the batch.
         """
-        user = [{"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
+        images = images or []
+        counts = Counter(i for i, _ in images)
+        for m in payload.get("messages", []):
+            if m.get("i") in counts:
+                m["images"] = counts[m["i"]]
+        batch = json.dumps(payload, ensure_ascii=False)
+        if images:  # images are only allowed in user messages
+            content = [{"type": "text", "text": batch}]
+            for i, url in images:
+                content += [{"type": "text", "text": f"Image from message i={i}:"},
+                            {"type": "image_url", "image_url": {"url": url}}]
+            user = [{"role": "user", "content": content}]
+        else:
+            user = [{"role": "user", "content": batch}]
         if note:
             user.append({"role": "user", "content": note})
         if quip:  # after the batch, so the system prompt stays a cacheable prefix
@@ -313,7 +338,7 @@ class Judge:
             raise Truncated(f"ran out of output tokens on {n} posts")
         raw = resp.choices[0].message.content or ""
         texts = [m.get("text", "") for m in payload.get("messages", []) if "i" in m]
-        verdicts = parse_verdicts(raw, n, texts if len(texts) == n else None)
+        verdicts = parse_verdicts(raw, n, texts if len(texts) == n else None, set(counts))
         return verdicts, parse_quip(raw) if quip else None
 
     async def roast(self, name: str, stats: str, posts: list[tuple[int, str, str]]) -> str:
@@ -452,7 +477,8 @@ def _load(raw: str):
             return None
 
 
-def parse_verdicts(raw: str, n: int, texts: list[str] | None = None) -> dict[int, Verdict]:
+def parse_verdicts(raw: str, n: int, texts: list[str] | None = None,
+                   with_images: frozenset[int] | set[int] = frozenset()) -> dict[int, Verdict]:
     """Flagged posts (severity > 0) and distress posts (severity 0, labels {"distress": true}).
 
     With texts (the scored messages' own text), a labelled flag whose evidence quote isn't
@@ -491,7 +517,9 @@ def parse_verdicts(raw: str, n: int, texts: list[str] | None = None) -> dict[int
                 out[i] = Verdict(0, "distress", {"distress": True})
                 PARSE_STATS["distress"] += 1
                 continue
-            if texts is not None and not evidence_found(str(v.get("evidence", "")), texts[i]):
+            evidence = str(v.get("evidence", ""))
+            from_image = i in with_images and _squash(evidence).strip("[]") == "image"
+            if texts is not None and not from_image and not evidence_found(evidence, texts[i]):
                 PARSE_STATS["no_evidence"] += 1
                 continue
             labels["evidence"] = str(v.get("evidence", ""))[:200]

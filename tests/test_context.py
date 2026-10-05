@@ -21,10 +21,11 @@ def fake_message(text="", author_id=5, bot=False, attachments=(), stickers=(), e
               attachments=list(attachments), stickers=list(stickers), embeds=list(embeds), reference=reference)
 
 
-def test_classify_keeps_reactions_and_images_as_context():
+def test_classify_keeps_reactions_as_context_and_judges_pictures():
     assert b.classify(fake_message("my oshi is my wife"), set()) is True
     assert b.classify(fake_message("w"), set()) is False
-    assert b.classify(fake_message("", attachments=[NS(content_type="image/png", filename="shrine.png")]), set()) is False
+    assert b.classify(fake_message("", attachments=[NS(content_type="image/png", filename="shrine.png")]), set()) is True
+    assert b.classify(fake_message("", attachments=[NS(content_type="image/gif", filename="x.gif")]), set()) is False
     assert b.classify(fake_message(""), set()) is None
     assert b.classify(fake_message("!kimoiboard"), set()) is None
     assert b.classify(fake_message("uooh", bot=True), set()) is None
@@ -172,3 +173,69 @@ def test_batches_that_run_out_of_tokens_are_split(monkeypatch):
     assert judged == 80 and flagged == 8  # 40 -> 20 -> 10: eight batches of 10 succeed
     assert sorted(set(sizes)) == [10, 20, 40]
     assert b.db.count_unjudged(GUILD) == 0
+
+
+def test_image_urls_skip_gifs_video_and_big_files():
+    pic = lambda url: NS(url=url, proxy_url=None)
+    m = fake_message("", attachments=[NS(content_type="image/png", url="a.png", size=10),
+                                      NS(content_type="image/gif", url="b.gif", size=10),
+                                      NS(content_type="image/jpeg", url="huge.jpg", size=50_000_000)],
+                     embeds=[NS(type="gifv", image=None, thumbnail=pic("tenor.gif")),
+                             NS(type="rich", image=None, thumbnail=pic("preview.jpg"))])
+    assert b.image_urls(m) == ["a.png", "preview.jpg"]
+
+
+def test_pictures_reach_the_judge_and_count_as_evidence(monkeypatch):
+    b.db.conn.execute("DELETE FROM messages")
+    b.db.save_batch(50, 3, [row(1, text="look at this", images=json.dumps(["https://cdn/x.png"])),
+                            row(2, text="nice", images="[]"),
+                            row(3, text="old post", extras="image/png: old.png")])  # scraped before images
+
+    async def download(url):
+        return "data:image/png;base64,AAAA" if url != "https://cdn/expired.png" else None
+
+    async def fresh(guild, channel_id, mid):
+        b.db.set_images(mid, ["https://cdn/new.png"])
+        return ["https://cdn/new.png"]
+
+    monkeypatch.setattr(b, "download_image", download)
+    monkeypatch.setattr(b, "fresh_image_urls", fresh)
+    pictures = asyncio.run(b.batch_images(NS(), 50, [1, 2, 3]))
+    assert [i for i, _ in pictures] == [0, 2]  # message 3's picture was looked up on Discord
+    assert json.loads(b.db.get_message(3)["images"]) == ["https://cdn/new.png"]
+
+    sent = []
+
+    async def create(**kwargs):
+        sent.append(kwargs)
+        flagged = [{"i": 0, "evidence": "[image]", "behaviours": ["horny"], "target": "real"},
+                   {"i": 1, "evidence": "[image]", "behaviours": ["horny"], "target": "real"}]
+        return NS(usage=None, choices=[NS(finish_reason="stop", message=NS(content=json.dumps({"flagged": flagged})))])
+
+    monkeypatch.setattr(b.judge.client.chat.completions, "create", create)
+    payload, order = build_payload({"name": "#g"}, b.db.timeline(50, 1, 3, before=0), [1, 2, 3])
+    result, _ = asyncio.run(b.judge.judge_with_quip(payload, 3, quip=False, images=pictures))
+    content = sent[0]["messages"][1]["content"]
+    assert content[1] == {"type": "text", "text": "Image from message i=0:"} and content[2]["type"] == "image_url"
+    batch = json.loads(content[0]["text"])
+    assert batch["messages"][0]["images"] == 1 and "images" not in batch["messages"][1]
+    assert result[0].severity > 0 and 1 not in result  # "[image]" only counts for a post that has one
+
+
+def test_expired_picture_links_are_refreshed_once(monkeypatch):
+    b.db.conn.execute("DELETE FROM messages")
+    b.db.save_batch(50, 1, [row(1, text="look", images=json.dumps(["https://cdn/expired.png"]))])
+    calls = []
+
+    async def download(url):
+        return None if "expired" in url else "data:image/png;base64,AAAA"
+
+    async def fresh(guild, channel_id, mid):
+        calls.append(mid)
+        return ["https://cdn/new.png"]
+
+    monkeypatch.setattr(b, "download_image", download)
+    monkeypatch.setattr(b, "fresh_image_urls", fresh)
+    assert asyncio.run(b.batch_images(NS(), 50, [1])) == [(0, "data:image/png;base64,AAAA")] and calls == [1]
+    monkeypatch.setattr(b, "IMAGES", False)
+    assert asyncio.run(b.batch_images(NS(), 50, [1])) == []

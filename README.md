@@ -168,6 +168,18 @@ labelled `spiral` and capped at 8. Wanting to die or self-harm that has nothing 
 fandom, or someone who seems genuinely not okay, scores 0, is marked as distress, and is kept out of
 roasts, dossiers and quips.
 
+### Pictures
+
+The judge sees pictures too (`NSA_IMAGES=on`): image attachments and link-preview pictures on the
+posts being judged, at most 2 per post and `NSA_IMAGES_PER_BATCH` (default 10) per call, each up to
+about 1k tokens. GIFs, stickers and video are skipped. Picture-only posts are judged instead of
+being kept as context. A flag can cite `"[image]"` as its evidence, but only for a post that
+actually carries a picture. Lewd art, doujin pages and creepshot-style crops count; official art,
+screenshots, memes and ordinary merch photos don't. The bot downloads each picture itself and sends
+it inline, because Discord's links are signed and expire after about a day; an expired link is
+refreshed by re-reading the message once. Posts scraped before this was added have no picture links
+stored, so the bot re-reads those messages from Discord the first time they're judged again.
+
 ### Server notes
 
 `/notes` (admins) shows the judge's who's-who, and attaching a `.md` or `.txt` file to `/notes`

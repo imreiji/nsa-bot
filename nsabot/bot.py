@@ -1,6 +1,7 @@
 """Discord front end: watch channels, feed posts to the DeepSeek judge, report and rank the kimoi."""
 
 import asyncio
+import base64
 import io
 import json
 import logging
@@ -12,6 +13,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 from typing import Literal
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
@@ -63,6 +65,11 @@ VAR_MIN_SEVERITY = int(os.getenv("NSA_VAR_MIN_SEVERITY") or REPORT_MIN_SEVERITY)
 VAR_PER_USER_HOUR = int(os.getenv("NSA_VAR_PER_USER_HOUR", "5"))  # DeepSeek reviews per person per hour
 VAR_AFTER = 5  # messages after the deleted one shown as context (how people reacted)
 MIN_CHARS = int(os.getenv("NSA_MIN_CHARS", "3"))
+IMAGES = os.getenv("NSA_IMAGES", "on").lower() not in ("off", "0", "false")  # let the judge see pictures
+IMAGES_PER_MESSAGE = 2
+IMAGES_PER_BATCH = int(os.getenv("NSA_IMAGES_PER_BATCH", "10"))  # up to ~1k tokens each
+IMAGE_MAX_BYTES = 8 * 1024 * 1024
+IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp")  # no GIFs or stickers
 QUIPS = os.getenv("NSA_QUIPS", "on").lower() not in ("off", "0", "false")  # the judge decides when to joke
 QUIP_COOLDOWN = float(os.getenv("NSA_QUIP_COOLDOWN_MINUTES", "30")) * 60  # at most one per server this often
 CONCURRENCY = max(1, int(os.getenv("NSA_CONCURRENCY", "16")))  # DeepSeek calls in flight at once
@@ -201,6 +208,19 @@ def describe_extras(m: discord.Message) -> str | None:
     return "; ".join(parts) or None
 
 
+def image_urls(m: discord.Message) -> list[str]:
+    """Pictures the judge can look at: image attachments and link-preview pictures (no GIFs, stickers or video)."""
+    urls = [a.url for a in m.attachments
+            if (a.content_type or "").split(";")[0] in IMAGE_TYPES and (a.size or 0) <= IMAGE_MAX_BYTES]
+    for e in m.embeds:
+        if e.type in ("gifv", "video"):
+            continue
+        pic = e.image or e.thumbnail
+        if pic and (pic.proxy_url or pic.url):
+            urls.append(pic.proxy_url or pic.url)
+    return urls[:IMAGES_PER_MESSAGE]
+
+
 def classify(m: discord.Message, opted_out: set[int]) -> bool | None:
     """True = score it, False = keep only as context for its neighbours, None = ignore."""
     if m.author.bot or m.author.id in opted_out:
@@ -210,6 +230,8 @@ def classify(m: discord.Message, opted_out: set[int]) -> bool | None:
         return None
     if len(text) >= MIN_CHARS:
         return True
+    if IMAGES and any((a.content_type or "").split(";")[0] in IMAGE_TYPES for a in m.attachments):
+        return True  # a picture post can be judged on the picture
     if text or m.attachments or m.stickers or m.embeds or getattr(m, "message_snapshots", None):
         return False  # "w", "lol", image-only posts: tells the judge how people reacted
     return None
@@ -226,7 +248,80 @@ def to_row(m: discord.Message, scored: bool, opted_out: set[int]) -> Message:
                 row.reply_author = target.author.display_name
                 row.reply_text = clip(plain_text(target) or describe_extras(target) or "", 300)
     row.extras = describe_extras(m)
+    row.images = json.dumps(image_urls(m))
     return row
+
+
+# --- pictures for the judge -----------------------------------------------------
+
+http_session: aiohttp.ClientSession | None = None
+
+
+async def download_image(url: str) -> str | None:
+    """A picture as a data: URL (DeepSeek can't fetch Discord's signed links itself), or None."""
+    global http_session
+    if http_session is None or http_session.closed:
+        http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
+    try:
+        async with http_session.get(url) as resp:
+            kind = (resp.headers.get("Content-Type") or "").split(";")[0]
+            if resp.status != 200 or kind not in IMAGE_TYPES or (resp.content_length or 0) > IMAGE_MAX_BYTES:
+                return None
+            data = bytearray()
+            async for chunk in resp.content.iter_chunked(64 * 1024):
+                data += chunk
+                if len(data) > IMAGE_MAX_BYTES:
+                    return None
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return None
+    return f"data:{kind};base64,{base64.b64encode(bytes(data)).decode()}"
+
+
+async def fresh_image_urls(guild: discord.Guild, channel_id: int, message_id: int) -> list[str]:
+    """Re-read a message for its current picture links (Discord's expire after about a day)."""
+    channel = guild.get_channel_or_thread(channel_id)
+    if channel is None:
+        return []
+    try:
+        message = await channel.fetch_message(message_id)
+    except discord.HTTPException:
+        db.set_images(message_id, [])  # gone or unreadable: don't try again
+        return []
+    urls = image_urls(message)
+    db.set_images(message_id, urls)
+    return urls
+
+
+async def batch_images(guild: discord.Guild, channel_id: int, order: list[int]) -> list[tuple[int, str]]:
+    """(index, data URL) for the pictures in a batch's scored messages, at most IMAGES_PER_BATCH."""
+    if not IMAGES:
+        return []
+    out: list[tuple[int, str]] = []
+    rows = db.images_for(order)
+    for i, mid in enumerate(order):
+        row = rows.get(mid)
+        if row is None:
+            continue
+        if row["images"] is None:  # scraped before pictures were recorded: look only if it had any
+            extras = row["extras"] or ""
+            urls = await fresh_image_urls(guild, channel_id, mid) if ("image/" in extras or "link preview" in extras) else []
+        else:
+            urls = json.loads(row["images"])
+        refreshed = False
+        for url in urls:
+            if len(out) >= IMAGES_PER_BATCH:
+                return out
+            data = await download_image(url)
+            if data is None and not refreshed and row["images"] is not None:
+                refreshed = True  # probably an expired link: get fresh ones and retry this message once
+                fresh = await fresh_image_urls(guild, channel_id, mid)
+                for again in fresh:
+                    if len(out) < IMAGES_PER_BATCH and (data := await download_image(again)):
+                        out.append((i, data))
+                break
+            if data:
+                out.append((i, data))
+    return out
 
 
 def channel_info(guild: discord.Guild, channel_id: int) -> dict:
@@ -426,7 +521,9 @@ async def judge_backlog(guild: discord.Guild, progress=None, max_window: int | N
             t0 = time.monotonic()
             quip = quip_allowed(guild.id)
             try:
-                result, joke = await judge.judge_with_quip(payload, len(order), quip, anchors=prompt_extras(guild.id))
+                pictures = await batch_images(guild, channel_id, order)
+                result, joke = await judge.judge_with_quip(payload, len(order), quip, anchors=prompt_extras(guild.id),
+                                                           images=pictures)
             except Truncated:
                 if len(ids) >= MIN_SPLIT * 2:  # too much to think about at once: retry as two halves
                     half = len(ids) // 2
@@ -765,7 +862,9 @@ async def var_review(event: discord.RawMessageDeleteEvent):
         timeline = db.timeline(cid, mid, mid, before=CONTEXT_MESSAGES) + db.timeline_after(cid, mid, VAR_AFTER)
         payload, _ = build_payload(channel_info(guild, cid), timeline, [mid])
         try:
-            result, _ = await judge.judge_with_quip(payload, 1, quip=False, note=VAR_NOTE, anchors=prompt_extras(gid))
+            pictures = await batch_images(guild, cid, [mid])
+            result, _ = await judge.judge_with_quip(payload, 1, quip=False, note=VAR_NOTE, anchors=prompt_extras(gid),
+                                                    images=pictures)
         except Exception:
             log.exception("VAR review of %s failed", mid)
             return
@@ -1126,9 +1225,11 @@ async def run_evaluation(guild: discord.Guild, progress=None, limit: int | None 
                     + db.timeline_after(channel_id, ids[-1], AFTER_MESSAGES))
         payload, order = build_payload(channel_info(guild, channel_id), timeline, ids)
         async with sem:
+            pictures = await batch_images(guild, channel_id, order)
             for attempt in range(3):
                 try:
-                    result, _ = await judge.judge_with_quip(payload, len(order), quip=False, anchors=extras)
+                    result, _ = await judge.judge_with_quip(payload, len(order), quip=False, anchors=extras,
+                                                            images=pictures)
                     break
                 except Exception:
                     log.exception("evaluation batch failed (attempt %d)", attempt + 1)

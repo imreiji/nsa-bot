@@ -24,7 +24,8 @@ CREATE TABLE IF NOT EXISTS messages (
     extras      TEXT,                  -- attachments, stickers, embeds, forwards, as text
     deleted     INTEGER NOT NULL DEFAULT 0, -- deleted by its author (VAR reviewed)
     labels      TEXT,                  -- JSON labels from the judge (formula scoring)
-    rubric_version INTEGER             -- rubric the verdict was made under (NULL = v1, number scores)
+    rubric_version INTEGER,            -- rubric the verdict was made under (NULL = v1, number scores)
+    images      TEXT                   -- JSON list of image URLs the judge can look at (NULL = not recorded)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_unjudged ON messages (guild_id, severity);
 CREATE INDEX IF NOT EXISTS idx_messages_author ON messages (guild_id, author_id);
@@ -75,11 +76,13 @@ MIGRATIONS = {
     "deleted": "INTEGER NOT NULL DEFAULT 0",
     "labels": "TEXT",
     "rubric_version": "INTEGER",
+    "images": "TEXT",
 }
 
 INSERT = (
     "INSERT OR IGNORE INTO messages (id, guild_id, channel_id, author_id, author_name, content, scored,"
-    " reply_to_id, reply_author_id, reply_author, reply_text, extras) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    " reply_to_id, reply_author_id, reply_author, reply_text, extras, images)"
+    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
 
 # A message plus whatever it replies to; falls back to the stored target when the reply wasn't resolved.
@@ -110,12 +113,13 @@ class Message:
     reply_author: str | None = None
     reply_text: str | None = None
     extras: str | None = None
+    images: str | None = None  # JSON list of URLs
 
     def params(self) -> tuple:
         return (
             self.id, self.guild_id, self.channel_id, self.author_id, self.author_name, self.content,
             int(self.scored), self.reply_to_id, self.reply_author_id, self.reply_author, self.reply_text,
-            self.extras,
+            self.extras, self.images,
         )
 
 
@@ -162,6 +166,16 @@ class DB:
     def save_message(self, m: Message) -> None:
         with self.conn:
             self.conn.execute(INSERT, m.params())
+
+    def images_for(self, ids: list[int]) -> dict[int, sqlite3.Row]:
+        """id -> (images, extras) for the given messages, to load their pictures for the judge."""
+        marks = ",".join("?" * len(ids))
+        rows = self.conn.execute(f"SELECT id, images, extras FROM messages WHERE id IN ({marks})", ids).fetchall()
+        return {r["id"]: r for r in rows}
+
+    def set_images(self, message_id: int, images: list[str]) -> None:
+        with self.conn:
+            self.conn.execute("UPDATE messages SET images = ? WHERE id = ?", (json.dumps(images), message_id))
 
     # --- judging ------------------------------------------------------------
 
