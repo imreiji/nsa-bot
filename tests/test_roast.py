@@ -76,3 +76,23 @@ def test_roast_command(monkeypatch):
     assert embed.title == "🔥 ROAST: yargas" and "kidney" in embed.description
 
     assert run_roast(999, monkeypatch) == ["No intel on yargas. Can't roast a ghost."]  # no API call
+
+
+def test_slow_commands_acknowledge_discord_first():
+    import asyncio
+    from types import SimpleNamespace as NS
+    calls = []
+
+    async def defer():
+        calls.append("defer")
+
+    ctx = NS(interaction=NS(response=NS(is_done=lambda: False)), defer=defer)
+    asyncio.run(b.ack(ctx))
+    ctx_done = NS(interaction=NS(response=NS(is_done=lambda: True)), defer=defer)
+    asyncio.run(b.ack(ctx_done))
+    asyncio.run(b.ack(NS(interaction=None, defer=defer)))  # prefix command: nothing to acknowledge
+    assert calls == ["defer"]
+    import inspect
+    for name in ("dossier", "roast", "kimoiboard", "kimoi"):
+        body = inspect.getsource(b.bot.get_command(name).callback).split("async def", 1)[1]
+        assert body.split("\n")[1].strip() == "await ack(ctx)", name  # first thing the command does
