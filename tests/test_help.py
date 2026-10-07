@@ -25,7 +25,7 @@ def test_everyone_sees_public_commands_admins_also_see_admin_ones():
     assert "`/dossier [member]`" in public.fields[0].value  # public now
 
     admin = run_help(ADMIN)
-    assert [f.name for f in admin.fields] == ["Everyone", "Admins (spend DeepSeek credit)"]
+    assert [f.name for f in admin.fields] == ["Everyone", "Admins (spend API credit)"]
     for cmd in ["scan", "scanall", "watch", "unwatch", "usage"]:
         assert f"`/{cmd}" in admin.fields[1].value
     assert all(len(f.value) <= 1024 for f in admin.fields)  # Discord's field limit

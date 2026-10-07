@@ -7,6 +7,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import NamedTuple
 
+import anthropic
 from openai import AsyncOpenAI
 
 from . import scoring
@@ -259,26 +260,68 @@ class Truncated(Exception):
     """The model used its whole output budget (usually thinking) before finishing the answer."""
 
 
+class Refused(Exception):
+    """The model's safety classifier declined the request (Claude's stop_reason "refusal")."""
+
+
+class Reply(NamedTuple):
+    text: str
+    truncated: bool  # ran out of output tokens before finishing
+
+
+ANTHROPIC_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+DATA_URL = re.compile(r"data:(image/[\w.+-]+);base64,(.*)", re.DOTALL)
+
+
+def anthropic_content(content):
+    """OpenAI-style message content (a string, or text and image_url blocks) as Anthropic content."""
+    if isinstance(content, str):
+        return content
+    blocks = []
+    for block in content:
+        if block.get("type") == "image_url":
+            url = block["image_url"]["url"]
+            if m := DATA_URL.match(url):
+                source = {"type": "base64", "media_type": m.group(1), "data": m.group(2)}
+            else:
+                source = {"type": "url", "url": url}
+            blocks.append({"type": "image", "source": source})
+        else:
+            blocks.append({"type": "text", "text": block["text"]})
+    return blocks
+
+
 class Judge:
+    """Talks to the model: Claude through Anthropic's SDK (provider "anthropic"), or DeepSeek through
+    its OpenAI-compatible API (provider "deepseek"). Every call returns a Reply either way."""
+
     def __init__(
-        self, api_key: str, model: str, base_url: str, db: DB, thinking: bool = True, effort: str | None = None,
-        thinking_tokens: int = 32000,
+        self, api_key: str, model: str, base_url: str | None, db: DB, thinking: bool = True, effort: str | None = None,
+        thinking_tokens: int = 32000, provider: str = "deepseek",
     ):
+        self.provider = provider
         # Bounded retries/timeouts so a flaky API can't stall a sweep or multiply spend.
         # Thinking at high effort can take a few minutes on a full batch.
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=2, timeout=300 if thinking else 120)
+        timeout = 300 if thinking else 120
+        if provider == "anthropic":
+            self.client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=2, timeout=timeout,
+                                                   **({"base_url": base_url} if base_url else {}))
+        else:
+            self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=2, timeout=timeout)
         self.model = model
         self.db = db
         self.thinking = thinking
         self.effort = effort
         self.thinking_tokens = thinking_tokens  # output room for reasoning on top of the answer
 
-    async def _complete(self, *, max_tokens: int, temperature: float, thinking: bool | None = None, **kwargs):
+    async def _complete(self, *, max_tokens: int, temperature: float, thinking: bool | None = None, **kwargs) -> Reply:
         """max_tokens is the answer budget; thinking gets extra room on top since it may count against it.
 
         thinking overrides the configured mode for this call (e.g. off for snappy chat replies).
         """
         thinking = self.thinking if thinking is None else thinking
+        if self.provider == "anthropic":
+            return await self._complete_anthropic(kwargs["messages"], max_tokens, thinking)
         extra = {"thinking": {"type": "enabled" if thinking else "disabled"}}
         if thinking:
             if self.effort:
@@ -289,7 +332,36 @@ class Judge:
         resp = await self.client.chat.completions.create(model=self.model, extra_body=extra, **kwargs)
         if resp.usage:
             self.db.add_tokens(resp.usage.total_tokens)  # informational, shown by !usage
-        return resp
+        choice = resp.choices[0]
+        return Reply(choice.message.content or "", choice.finish_reason == "length")
+
+    async def _complete_anthropic(self, messages: list[dict], max_tokens: int, thinking: bool) -> Reply:
+        """Claude: adaptive thinking steered by effort ("low" when thinking is off for this call), no
+        temperature (Haiku 5.5 rejects it). The system prompt is cached, so repeat calls read it at
+        a tenth of the input price."""
+        system = [{"type": "text", "text": m["content"]} for m in messages if m["role"] == "system"]
+        if system:
+            system[-1]["cache_control"] = {"type": "ephemeral"}
+        chat = [{"role": m["role"], "content": anthropic_content(m["content"])} for m in messages if m["role"] != "system"]
+        effort = (self.effort if self.effort in ANTHROPIC_EFFORTS else None) if thinking else "low"
+        # Thinking counts against max_tokens, so leave room for it even at low effort.
+        budget = max_tokens + (self.thinking_tokens if thinking else 4000)
+        async with self.client.messages.stream(
+            model=self.model,
+            max_tokens=budget,
+            system=system,
+            messages=chat,
+            **({"output_config": {"effort": effort}} if effort else {}),
+        ) as stream:
+            msg = await stream.get_final_message()
+        usage = msg.usage
+        self.db.add_tokens(usage.input_tokens + usage.output_tokens
+                           + (usage.cache_creation_input_tokens or 0) + (usage.cache_read_input_tokens or 0))
+        if msg.stop_reason == "refusal":
+            category = getattr(msg.stop_details, "category", None) if getattr(msg, "stop_details", None) else None
+            raise Refused(f"declined by the model ({category or 'no category'})")
+        text = "".join(block.text for block in msg.content if block.type == "text")
+        return Reply(text, msg.stop_reason == "max_tokens")
 
     async def judge(self, payload: dict, n: int, anchors: str | None = None) -> dict[int, Verdict]:
         """payload from build_payload(); n = number of scored messages in it.
@@ -334,9 +406,9 @@ class Judge:
             temperature=0.2,
             max_tokens=2000,
         )
-        if resp.choices[0].finish_reason == "length":
+        if resp.truncated:
             raise Truncated(f"ran out of output tokens on {n} posts")
-        raw = resp.choices[0].message.content or ""
+        raw = resp.text
         texts = [m.get("text", "") for m in payload.get("messages", []) if "i" in m]
         verdicts = parse_verdicts(raw, n, texts if len(texts) == n else None, set(counts))
         return verdicts, parse_quip(raw) if quip else None
@@ -352,7 +424,7 @@ class Judge:
             temperature=1.0,
             max_tokens=400,
         )
-        return (resp.choices[0].message.content or "").strip()
+        return resp.text.strip()
 
     async def respond(self, payload: dict, thinking: bool = False) -> str:
         """A chat reply to the target message in its conversation (see RESPOND_PROMPT)."""
@@ -365,7 +437,7 @@ class Judge:
             max_tokens=400,
             thinking=thinking,
         )
-        return (resp.choices[0].message.content or "").strip()
+        return resp.text.strip()
 
     async def burn(self, name: str, stats: str, worst: list[tuple[int, str, str]], recent: list[str]) -> str:
         """A comedy roast. worst: (severity, text, reason); recent: their latest posts."""
@@ -377,7 +449,7 @@ class Judge:
             temperature=1.1,
             max_tokens=500,
         )
-        return (resp.choices[0].message.content or "").strip()
+        return resp.text.strip()
 
 
 def roast_input(name: str, stats: str, worst: list[tuple[int, str, str]], recent: list[str]) -> str:

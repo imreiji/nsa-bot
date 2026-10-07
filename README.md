@@ -30,7 +30,7 @@ commands are registered only in the servers in `NSA_GUILD_IDS` when the bot star
 | `/evaluate [limit]` | admin UIDs | Test the current prompt on the reviewed posts, report in DMs (nothing saved) |
 | `/notes [file]` | admin UIDs | Get the judge's server notes in DMs, or replace them with an attached file |
 | `/rescore [scope]` | admin UIDs | Re-judge posts scored under an older rubric, or with `scope:flagged` only the flagged ones (much cheaper). Re-runs DeepSeek; old history isn't re-posted |
-| `/model` | anyone | Which DeepSeek model and settings the bot uses |
+| `/model` | anyone | Which model (Claude or DeepSeek) and settings the bot uses |
 | `/scoring` | anyone | The scoring formula, thresholds and calibration accuracy |
 | `/dossier [@user]` | everyone (`NSA_DOSSIER_PUBLIC`, 3/hour each; admins unlimited) | Deadpan classified report on their kimoi record |
 | `/roast [@user]` | admin UIDs (everyone with `NSA_ROAST_PUBLIC=on`, 3/hour each) | Comedy roast built from their recent posts, kimoi stats and worst posts |
@@ -292,9 +292,22 @@ Each post has `id`, `author`, `author_id`, `time`, `channel`, `text`, `reply_to`
    ID** (`NSA_ADMIN_IDS`) and right-click the server → **Copy Server ID** (`NSA_GUILD_IDS`).
 5. Create a channel for reports, e.g. `#kimoi-reports`. Hide the bot from channels it shouldn't read.
 
-### 2. DeepSeek
+### 2. Model
 
-Get an API key at <https://platform.deepseek.com> (`DEEPSEEK_API_KEY`) and top up a small balance.
+The bot runs on **Claude Haiku 5.5** by default (`NSA_PROVIDER=anthropic`). Get an API key at
+<https://console.anthropic.com> (`ANTHROPIC_API_KEY`) and set a monthly spend limit there.
+
+- Haiku 5.5 costs $0.10 / $0.50 per million input / output tokens for prompts up to 100k tokens
+  (judge batches are well under that). The judge prompt is cached, so most of each call's input is
+  billed at $0.01 per million.
+- Thinking is adaptive; `NSA_EFFORT` (low/medium/high/xhigh/max, blank = medium) sets how hard it
+  thinks. Chat replies with thinking off run at effort `low`.
+- Claude can decline a request (a `refusal`). A judge batch that's declined is split in half and
+  retried until the one post it objects to is found; that post is filed as 0 ("declined by the
+  model") so it isn't retried forever.
+
+To go back to DeepSeek, set `NSA_PROVIDER=deepseek` and `DEEPSEEK_API_KEY` (from
+<https://platform.deepseek.com>) and restart; the `DEEPSEEK_*` settings still apply there.
 
 ### 3. Run it (any always-on Linux box with Docker)
 
