@@ -93,3 +93,32 @@ def test_a_refused_batch_is_narrowed_down_to_the_post_it_objects_to(monkeypatch)
     assert b.db.count_unjudged(10) == 0  # nothing is left to retry forever
     assert b.db.get_message(3)["reason"] == "declined by the model" and b.db.get_message(3)["severity"] == 0
     assert ["bad"] in calls and len(calls) <= 5
+
+
+def test_evaluation_narrows_refusals_and_reports_dropped_posts(monkeypatch, tmp_path):
+    from nsabot import evaluate
+    rows = [{"id": str(i), "should": 5, "verdict": "ok", "safety": None, "bot": 5} for i in range(1, 9)]
+    path = tmp_path / "review.jsonl"
+    path.write_text("\n".join(json.dumps(r) for r in rows))
+    monkeypatch.setattr(evaluate.load_review_set, "__defaults__", (str(path),))
+    b.db.conn.execute("DELETE FROM messages")
+    b.db.save_batch(50, 8, [Message(i, 10, 50, 5, "u", "bad" if i == 3 else f"post {i}") for i in range(1, 9)])
+    b.db.save_batch(51, 108, [Message(100 + i, 10, 51, 5, "u", "x") for i in range(1, 9)])
+    rows += [{"id": str(100 + i), "should": 5, "verdict": "ok", "safety": None, "bot": 5} for i in range(1, 9)]
+    path.write_text("\n".join(json.dumps(r) for r in rows))
+
+    async def judge_with_quip(payload, n, quip, note=None, anchors=None, images=None):
+        texts = [m["text"] for m in payload["messages"] if "i" in m]
+        if "bad" in texts:
+            raise Refused("declined by the model (general_harms)")
+        if "x" in texts:
+            raise RuntimeError("429")
+        return {i: b.Verdict(5, "r", {"behaviours": ["spending"]}) for i in range(n)}, None
+
+    monkeypatch.setattr(b.judge, "judge_with_quip", judge_with_quip)
+    guild = NS(id=10, get_channel_or_thread=lambda _: NS(name="general", topic=None, is_nsfw=lambda: False))
+    report = asyncio.run(b.run_evaluation(guild))
+    assert report["asked"] == 16 and report["n"] == 8  # channel 51's batch kept failing
+    assert report["failed"] == {"declined by the model (scored 0)": 1, "RuntimeError": 8}
+    embed = b.evaluation_embed(10, report)
+    assert "8 of 16 posts left out" in embed.description and "RuntimeError ×8" in embed.description

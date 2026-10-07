@@ -304,7 +304,9 @@ class Judge:
         # Thinking at high effort can take a few minutes on a full batch.
         timeout = 300 if thinking else 120
         if provider == "anthropic":
-            self.client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=2, timeout=timeout,
+            # More retries than DeepSeek: new Anthropic accounts have low rate limits, and the SDK
+            # waits out each 429 for as long as the API asks.
+            self.client = anthropic.AsyncAnthropic(api_key=api_key, max_retries=6, timeout=timeout,
                                                    **({"base_url": base_url} if base_url else {}))
         else:
             self.client = AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=2, timeout=timeout)

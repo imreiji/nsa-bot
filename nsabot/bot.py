@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import time
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import timedelta
 from types import SimpleNamespace
 from typing import Literal
@@ -1260,11 +1260,14 @@ async def run_evaluation(guild: discord.Guild, progress=None, limit: int | None 
     tokens_before = db.tokens_today()
     extras = prompt_extras(guild.id)
 
+    failed: Counter = Counter()  # posts left out of the report, by cause
+
     async def one(channel_id: int, ids: list[int]) -> None:
         nonlocal done
         timeline = (db.timeline(channel_id, ids[0], ids[-1], before=CONTEXT_MESSAGES)
                     + db.timeline_after(channel_id, ids[-1], AFTER_MESSAGES))
         payload, order = build_payload(channel_info(guild, channel_id), timeline, ids)
+        result, refused, cause = None, False, None
         async with sem:
             pictures = await batch_images(guild, channel_id, order)
             for attempt in range(3):
@@ -1272,10 +1275,23 @@ async def run_evaluation(guild: discord.Guild, progress=None, limit: int | None 
                     result, _ = await judge.judge_with_quip(payload, len(order), quip=False, anchors=extras,
                                                             images=pictures)
                     break
-                except Exception:
+                except Refused as e:
+                    log.warning("evaluation: batch of %d %s", len(ids), e)
+                    refused = True
+                    break
+                except Exception as e:
                     log.exception("evaluation batch failed (attempt %d)", attempt + 1)
-            else:
-                return
+                    cause = type(e).__name__
+        if refused and len(ids) > 1:  # narrow it down to the post it objects to, like a sweep does
+            half = len(ids) // 2
+            await asyncio.gather(one(channel_id, ids[:half]), one(channel_id, ids[half:]))
+            return
+        if refused:  # the one post the model won't judge: scored 0, as a sweep would file it
+            result = {}
+            failed["declined by the model (scored 0)"] += 1
+        elif result is None:
+            failed[cause] += len(order)
+            return
         for i, mid in enumerate(order):
             verdicts[mid] = result.get(i, Verdict(0, None))
             new[mid] = verdicts[mid].severity
@@ -1286,6 +1302,7 @@ async def run_evaluation(guild: discord.Guild, progress=None, limit: int | None 
     await asyncio.gather(*(one(c, ids) for c, ids in batches))
     report = evaluate.metrics([wanted[m] for _, m in posts], new)
     report.update(calls=len(batches), tokens=db.tokens_today() - tokens_before, stats=dict(PARSE_STATS),
+                  failed=dict(failed), asked=len(posts),
                   details=evaluation_details(guild.id, [(m, wanted[m]) for _, m in posts], verdicts))
     log.info("evaluation: %s", {k: v for k, v in report.items() if k not in ("worst", "details")})
     return report
@@ -1329,6 +1346,10 @@ def evaluation_embed(guild_id: int, r: dict) -> discord.Embed:
             f"**Score spread now:** `{' '.join(str(x) for x in a['dist'])}` (0→10)",
             f"Dropped for no quote: {r['stats'].get('no_evidence', 0)} · distress: {r['stats'].get('distress', 0)} · "
             f"{r['calls']} calls · {r['tokens']:,} tokens",
+            *([f"⚠️ **{r['asked'] - r['n']} of {r['asked']} posts left out** (the API kept failing): "
+               + ", ".join(f"{k} ×{v}" for k, v in r["failed"].items() if "declined" not in k)]
+              if r.get("asked", r["n"]) > r["n"] else []),
+            *([f"Declined by the model: {r['failed'][k]}" for k in r.get("failed", {}) if "declined" in k]),
         ]),
         color=0x5865F2,
     )
