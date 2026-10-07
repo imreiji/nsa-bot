@@ -1,4 +1,4 @@
-"""Discord front end: watch channels, feed posts to the DeepSeek judge, report and rank the kimoi."""
+"""Discord front end: watch channels, feed posts to the model judge, report and rank the kimoi."""
 
 import asyncio
 import base64
@@ -21,7 +21,8 @@ from dotenv import load_dotenv
 
 from . import api, evaluate, scoring
 from .db import DB, Message
-from .judge import PARSE_STATS, VAR_NOTE, Judge, Truncated, Verdict, anchors_text, build_payload, message_time
+from .judge import (PARSE_STATS, VAR_NOTE, Judge, Refused, Truncated, Verdict, anchors_text, build_payload,
+                    message_time)
 
 log = logging.getLogger("nsabot")
 
@@ -84,15 +85,28 @@ db = DB(DB_PATH)
 # the database, outside the repo, and is managed with /notes.
 SERVER_NOTES_PATH = os.getenv("NSA_SERVER_NOTES", os.path.join(os.path.dirname(DB_PATH) or ".", "server_notes.md"))
 SERVER_NOTES_MAX = 8000
-judge = Judge(
-    api_key=os.environ["DEEPSEEK_API_KEY"],
-    model=os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
-    base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
-    thinking=os.getenv("DEEPSEEK_THINKING", "on").lower() not in ("off", "0", "false", "disabled"),
-    effort=os.getenv("DEEPSEEK_REASONING_EFFORT") or None,
-    thinking_tokens=int(os.getenv("DEEPSEEK_THINKING_TOKENS", "32000")),
-    db=db,
-)
+PROVIDER = os.getenv("NSA_PROVIDER", "anthropic").lower()  # anthropic (Claude) or deepseek
+if PROVIDER == "anthropic":
+    judge = Judge(
+        api_key=os.environ["ANTHROPIC_API_KEY"],
+        model=os.getenv("ANTHROPIC_MODEL", "claude-haiku-5-5"),
+        base_url=os.getenv("ANTHROPIC_BASE_URL") or None,
+        thinking=os.getenv("NSA_THINKING", "on").lower() not in ("off", "0", "false", "disabled"),
+        effort=os.getenv("NSA_EFFORT") or None,  # low, medium, high, xhigh, max; blank = model default
+        thinking_tokens=int(os.getenv("NSA_THINKING_TOKENS", "32000")),
+        db=db,
+        provider="anthropic",
+    )
+else:
+    judge = Judge(
+        api_key=os.environ["DEEPSEEK_API_KEY"],
+        model=os.getenv("DEEPSEEK_MODEL", "deepseek-flash"),
+        base_url=os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+        thinking=os.getenv("DEEPSEEK_THINKING", "on").lower() not in ("off", "0", "false", "disabled"),
+        effort=os.getenv("DEEPSEEK_REASONING_EFFORT") or None,
+        thinking_tokens=int(os.getenv("DEEPSEEK_THINKING_TOKENS", "32000")),
+        db=db,
+    )
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -258,7 +272,7 @@ http_session: aiohttp.ClientSession | None = None
 
 
 async def download_image(url: str) -> str | None:
-    """A picture as a data: URL (DeepSeek can't fetch Discord's signed links itself), or None."""
+    """A picture as a data: URL (the model can't fetch Discord's signed links itself), or None."""
     global http_session
     if http_session is None or http_session.closed:
         http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=20))
@@ -546,6 +560,17 @@ async def judge_backlog(guild: discord.Guild, progress=None, max_window: int | N
                     continue
                 log.error("batch of %d ran out of tokens even after splitting; leaving it queued", len(ids))
                 failed = True
+            except Refused as e:
+                if len(ids) > 1:  # find the post it objects to: retry as two halves, down to single posts
+                    half = len(ids) // 2
+                    log.warning("batch of %d %s, retrying as %d + %d", len(ids), e, half, len(ids) - half)
+                    batches.put_nowait((channel_id, ids[:half]))
+                    batches.put_nowait((channel_id, ids[half:]))
+                    continue
+                # One post the model won't judge: file it as 0 so it isn't retried on every sweep.
+                log.warning("post %s %s; filed as not judged (0)", ids[0], e)
+                db.save_verdicts([(ids[0], 0, "declined by the model")], scoring.RUBRIC_VERSION)
+                continue
             except Exception:
                 log.exception("judge batch failed; leaving %d messages queued", len(order))
                 failed = True
@@ -603,7 +628,7 @@ async def report(guild: discord.Guild) -> int:
 async def process(guild: discord.Guild, progress=None) -> tuple[int, int, int]:
     """Judge the queue and report results. Caller must hold the guild lock."""
     if guild.id not in GUILD_IDS:
-        raise PermissionError(f"refusing to call DeepSeek for unlisted guild {guild.id}")
+        raise PermissionError(f"refusing to call the model for unlisted guild {guild.id}")
     judged, flagged = await judge_backlog(guild, progress)
     posted = await report(guild)
     return judged, flagged, posted
@@ -978,11 +1003,11 @@ async def unwatch(ctx: commands.Context):
     await ctx.send("Live surveillance off. Queued posts will be judged on the next scan.")
 
 
-@bot.hybrid_command(help="Show DeepSeek token usage and the queue.")
+@bot.hybrid_command(help="Show model token usage and the queue.")
 @deployer_only()
 async def usage(ctx: commands.Context):
     await ctx.send(
-        f"💸 {db.tokens_today():,} DeepSeek tokens used today (UTC). "
+        f"💸 {db.tokens_today():,} {judge.model} tokens used today (UTC). "
         f"{db.count_unjudged(ctx.guild.id)} posts queued. "
         f"Live watch: {'on' if ctx.guild.id in watching else 'off'}."
     )
@@ -994,11 +1019,12 @@ def on_off(flag: bool) -> str:
     return "on" if flag else "off"
 
 
-@bot.hybrid_command(help="Which DeepSeek model the bot uses, and how.")
+@bot.hybrid_command(help="Which model the bot uses (Claude or DeepSeek), and how.")
 async def model(ctx: commands.Context):
-    effort = judge.effort or "default (high)"
+    effort = judge.effort or ("default (medium)" if judge.provider == "anthropic" else "default (high)")
     embed = discord.Embed(title="🧠 Analyst hardware", color=0x5865F2)
-    embed.add_field(name="Model", value=f"`{judge.model}` via `{judge.client.base_url.host}`", inline=False)
+    embed.add_field(name="Model", value=f"`{judge.model}` via `{judge.client.base_url.host}` ({judge.provider})",
+                    inline=False)
     embed.add_field(
         name="Scoring posts",
         value=f"thinking {on_off(judge.thinking)}"
@@ -1037,7 +1063,7 @@ def calibration_stats(guild_id: int) -> dict:
 async def scoring_(ctx: commands.Context):
     embed = discord.Embed(
         title=f"📐 Kimoi scoring (rubric v{scoring.RUBRIC_VERSION})",
-        description="DeepSeek labels each kimoi post; this formula turns the labels into a score.\n\n"
+        description="The model labels each kimoi post; this formula turns the labels into a score.\n\n"
         + "\n".join(scoring.formula_lines()),
         color=0x5865F2,
     )
@@ -1319,7 +1345,7 @@ def evaluation_embed(guild_id: int, r: dict) -> discord.Embed:
     return embed
 
 
-@bot.hybrid_command(name="evaluate", help="Test the current prompt on the reviewed posts (DeepSeek, nothing saved; report in DMs).")
+@bot.hybrid_command(name="evaluate", help="Test the current prompt on the reviewed posts (calls the model, nothing saved; report in DMs).")
 @app_commands.describe(limit="Only the first N posts, for a quick cheap check (default: all)")
 @deployer_only()
 async def evaluate_(ctx: commands.Context, limit: int | None = None):
@@ -1642,7 +1668,7 @@ async def help_(ctx: commands.Context, name: str | None = None):
     )
     embed.add_field(name="Everyone", value=section(c for c in visible if not admin_only(c)), inline=False)
     if ctx.author.id in ADMIN_IDS:
-        embed.add_field(name="Admins (spend DeepSeek credit)", value=section(c for c in visible if admin_only(c)),
+        embed.add_field(name="Admins (spend API credit)", value=section(c for c in visible if admin_only(c)),
                         inline=False)
     embed.set_footer(text=f"/help <command> for details · every command also works with {PREFIX} · [optional] <required>")
     await ctx.send(embed=embed)
