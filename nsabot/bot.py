@@ -175,6 +175,14 @@ def ai_allowed(kind: str, guild_id: int, user_id: int, per_hour: int) -> bool:
     return True
 
 
+async def ack(ctx: commands.Context) -> None:
+    """Acknowledge a slash command right away. Discord drops one that isn't answered within 3
+    seconds, and the leaderboard queries behind some commands can take longer than that."""
+    interaction = getattr(ctx, "interaction", None)
+    if interaction and not interaction.response.is_done():
+        await ctx.defer()
+
+
 def admin_only(command: commands.Command) -> bool:
     return any(getattr(check, "admin_only", False) for check in command.checks)
 
@@ -1433,6 +1441,7 @@ async def notes(ctx: commands.Context, file: discord.Attachment | None = None):
 @public_ai("DOSSIER_PUBLIC")
 @commands.cooldown(1, 30, commands.BucketType.guild)
 async def dossier(ctx: commands.Context, member: Suspect = None):
+    await ack(ctx)
     member = member or ctx.author
     found = db.standing(ctx.guild.id, member.id)
     if not found:
@@ -1454,6 +1463,7 @@ async def dossier(ctx: commands.Context, member: Suspect = None):
 @public_ai("ROAST_PUBLIC")
 @commands.cooldown(1, 20, commands.BucketType.channel)
 async def roast(ctx: commands.Context, member: Suspect = None):
+    await ack(ctx)
     member = member or ctx.author
     recent = [r["content"] for r in db.recent_posts(ctx.guild.id, member.id)]
     if not recent:
@@ -1482,6 +1492,7 @@ async def roast(ctx: commands.Context, member: Suspect = None):
 @bot.hybrid_command(aliases=["kimoirank"], help="The kimoi leaderboard.")
 @commands.cooldown(1, 10, commands.BucketType.channel)
 async def kimoiboard(ctx: commands.Context):
+    await ack(ctx)
     rows = db.leaderboard(ctx.guild.id)
     if not rows:
         await ctx.send("No kimoi on file yet (or this server is suspiciously clean).")
@@ -1598,6 +1609,7 @@ async def kimoiposts(ctx: commands.Context, member: Suspect = None):
 @app_commands.describe(member="Whose file to open (leave empty for yours)")
 @commands.cooldown(1, 10, commands.BucketType.user)
 async def kimoi(ctx: commands.Context, member: Suspect = None):
+    await ack(ctx)
     member = member or ctx.author
     found = db.standing(ctx.guild.id, member.id)
     if not found:
@@ -1723,7 +1735,10 @@ async def on_command_error(ctx: commands.Context, error: commands.CommandError):
         await ctx.send(str(error), ephemeral=True)
     else:
         log.error("command failed", exc_info=error)
-        await ctx.send("Something went wrong in the field office.")
+        try:
+            await ctx.send("Something went wrong in the field office.")
+        except discord.NotFound:  # the slash command expired before we could answer: say it in the channel
+            await ctx.channel.send(f"{ctx.author.mention} something went wrong in the field office. Try again.")
 
 
 async def sync_slash_commands() -> None:

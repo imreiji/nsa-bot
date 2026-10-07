@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS messages (
 CREATE INDEX IF NOT EXISTS idx_messages_unjudged ON messages (guild_id, severity);
 CREATE INDEX IF NOT EXISTS idx_messages_author ON messages (guild_id, author_id);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON messages (channel_id, id);
+-- Covers the leaderboard/rank query (GROUP BY author over judged posts) without reading every row.
+CREATE INDEX IF NOT EXISTS idx_messages_standing ON messages (guild_id, author_id, severity, author_name);
 
 CREATE TABLE IF NOT EXISTS cursors (
     channel_id INTEGER PRIMARY KEY,
