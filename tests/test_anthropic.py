@@ -177,7 +177,7 @@ def test_agent_judge_runs_one_capped_session_per_batch():
     assert result[0].severity > 0 and judge.db.tokens_today() == 115
     create = calls["create"][0]
     assert create["agent"] == "agent_1" and create["environment_id"] == "env_1"
-    assert create["budget"] == {"type": "limit", "max_list_cost": {"amount": "0.25", "currency": "USD"}}
+    assert create["budget"] == {"type": "limit", "max_list_cost": {"amount": "25", "currency": "USD"}}
     content = calls["send"][0][0]["content"]
     assert calls["send"][0][0]["type"] == "user.message"
     assert content[0]["text"].startswith("Context for this server:") and "Server notes" in content[0]["text"]
@@ -204,13 +204,13 @@ def test_sync_agent_pushes_the_judge_prompt_only_when_it_changed():
     async def retrieve(agent_id):
         return NS(model=NS(id="claude-haiku-5-5"), system="old prompt", tools=[], version=1)
 
-    async def update(agent_id, system):
-        updates.append(system)
-        return NS(model=NS(id="claude-haiku-5-5"), system=system, tools=[], version=2)
+    async def update(agent_id, **changes):
+        updates.append(changes)
+        return NS(model=NS(id="claude-haiku-5-5"), system=changes.get("system"), tools=[], version=2)
 
     judge.client.beta.agents = NS(retrieve=retrieve, update=update)
     asyncio.run(judge.sync_agent())
-    assert updates == [JUDGE_PROMPT] and judge.agent_model == "claude-haiku-5-5"
+    assert updates == [{"system": JUDGE_PROMPT}] and judge.agent_model == "claude-haiku-5-5"
 
     async def retrieve_current(agent_id):
         return NS(model=NS(id="claude-haiku-5-5"), system=JUDGE_PROMPT, tools=[], version=2)
@@ -275,3 +275,30 @@ def test_a_spend_cap_stops_the_sweep_at_once(monkeypatch):
     asyncio.run(b.judge_backlog(guild))
     assert len(calls) == 1 and b.db.count_unjudged(10) == 400  # stopped on the first one, nothing lost
     assert "spending cap" in b.sweep_stops[10]
+
+
+
+def test_sync_agent_strips_tools_the_console_added():
+    from nsabot.judge import CLAUDE_JUDGE_PROMPT
+    judge, _ = agent_judge([])
+    updates = []
+
+    async def retrieve(agent_id):
+        return NS(model=NS(id="claude-haiku-5-5"), system=CLAUDE_JUDGE_PROMPT, version=3,
+                  tools=[NS(type="agent_toolset_20260401")], mcp_servers=[], skills=[NS(skill_id="x")])
+
+    async def update(agent_id, **changes):
+        updates.append(changes)
+        return NS(model=NS(id="claude-haiku-5-5"), version=4)
+
+    judge.client.beta.agents = NS(retrieve=retrieve, update=update)
+    asyncio.run(judge.sync_agent())
+    assert updates == [{"tools": [], "skills": []}]
+
+
+def test_budget_is_sent_in_cents():
+    judge, calls = agent_judge([NS(type="agent.message", content=[NS(type="text", text='{"flagged": []}')]),
+                                NS(type="session.status_idle", stop_reason=NS(type="end_turn"), stop_details=None)],
+                               agent_budget_usd=1.5)
+    asyncio.run(judge.judge({"messages": [{"i": 0, "text": "x"}]}, 1))
+    assert calls["create"][0]["budget"]["max_list_cost"] == {"amount": "150", "currency": "USD"}

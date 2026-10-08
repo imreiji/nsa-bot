@@ -538,11 +538,19 @@ class Judge:
         this repo reach it on the next deploy. An unchanged prompt creates no new agent version."""
         agent = await self.client.beta.agents.retrieve(self.agent_id)
         self.agent_model = getattr(agent.model, "id", None) or str(agent.model)
+        changes = {}
         if (agent.system or "") != self.judge_prompt:
-            agent = await self.client.beta.agents.update(self.agent_id, system=self.judge_prompt)
-            log.info("judge agent %s: system prompt synced (now version %s)", self.agent_id, agent.version)
-        if agent.tools:
-            log.warning("judge agent %s has tools enabled; the judge needs none", self.agent_id)
+            changes["system"] = self.judge_prompt
+        # The judge only reads a batch and answers: tools, MCP servers or skills would only let it
+        # wander off (and a tool request fails the batch), so strip any the Console added.
+        stray = [name for name in ("tools", "mcp_servers", "skills") if getattr(agent, name, None)]
+        for name in stray:
+            changes[name] = []
+        if changes:
+            agent = await self.client.beta.agents.update(self.agent_id, **changes)
+            log.info("judge agent %s synced (%s; now version %s)", self.agent_id,
+                     ", ".join(["system prompt"] * ("system" in changes) + [f"removed {n}" for n in stray]),
+                     agent.version)
 
     async def _judge_via_agent(self, content: list[dict]) -> Reply:
         """One judge batch as one Managed Agents session: open the stream, send the batch, collect
@@ -553,7 +561,9 @@ class Judge:
                 agent=self.agent_id,
                 environment_id=self.environment_id,
                 title="NSA judge batch",
-                budget={"type": "limit", "max_list_cost": {"amount": f"{self.agent_budget_usd:.2f}", "currency": "USD"}},
+                # amount is in minor units (cents) as an integer string: "25" is $0.25
+            budget={"type": "limit", "max_list_cost": {"amount": str(max(1, round(self.agent_budget_usd * 100))),
+                                                       "currency": "USD"}},
             )
         except anthropic.APIStatusError as e:
             if spend_cap(e):
