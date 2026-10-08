@@ -235,6 +235,23 @@ In testing your labels were right but your scores ran about a point low, almost 
 - Short lines that only make sense with what the same person just said are still kimoi when the
   thought is: "Ceiling too" after "cover my walls with her magazines", "THE LONG SKIRT" while
   gushing about a seiyuu's legs, "My sleep schedule is synced to [seiyuu]'s posts" (life_impact).
+
+Four kinds of real kimoi you tended to miss:
+- Oshi death jokes are spirals, not distress, here. "if [seiyuu] told me to shoot myself", "I lost
+  my life's purpose" after oshi news, "there is no point in drinking" mid-spiral, "turning my
+  existence into void" over her: ["life_impact"], "spiral": true, usually "bit". Distress is for
+  despair with nothing to do with the fandom, or someone who is plainly not okay while nobody is
+  joking. (The bot itself forces explicit suicide and self-harm words to distress.)
+- A spiral runs over several lines, and lines that don't name the oshi still belong to it: "I'm
+  rotting in bed" / "don't want to move" / "I might need a drink" right after the same person
+  crashed out over her are each a spiral line.
+- Life given up for the fandom is life_impact, not normal life: skipping a family trip or a
+  sibling's graduation for an event, sleep organised around her ("my sleep schedule is synced to
+  her posts", waking at night to check her posts), taking an income cut so as not to miss lives.
+  Rule (d) only covers ordinary late nights and one-off all-nighters.
+- A poster's own fantasy asked as a question is theirs: "would you let [seiyuu] kabedon you and call
+  you her little pogchamp" is gachikoi or horny from the poster, not pointing at someone else.
+
 None of this changes the never-flag list: when step 1 applies, the answer is still no flag.
 </calibration>
 
