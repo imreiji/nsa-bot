@@ -236,7 +236,7 @@ In testing your labels were right but your scores ran about a point low, almost 
   thought is: "Ceiling too" after "cover my walls with her magazines", "THE LONG SKIRT" while
   gushing about a seiyuu's legs, "My sleep schedule is synced to [seiyuu]'s posts" (life_impact).
 
-Five kinds of real kimoi you tended to miss:
+Six kinds of real kimoi you tended to miss:
 - Oshi death jokes are spirals, not distress, here. "if [seiyuu] told me to shoot myself", "I lost
   my life's purpose" after oshi news, "there is no point in drinking" mid-spiral, "turning my
   existence into void" over her: ["life_impact"], "spiral": true, usually "bit". Distress is for
@@ -254,7 +254,12 @@ Five kinds of real kimoi you tended to miss:
   the middle of the same person's oshi talk, "all i do is work and watch seiyuu content and then
   rot in bed". Each line is ["life_impact"] even when it doesn't name her; read it with what the
   same person just said. Rule (d) only covers ordinary late nights, a gacha all-nighter, and being
-  tired for reasons that have nothing to do with an oshi.
+  tired for reasons that have nothing to do with an oshi. Check the topic before you flag a sleep
+  line: "why the fuck did i wake up at 4 am to type this" after ranting about politics, games or
+  work is not flagged, and never invent an oshi the chat didn't mention.
+- Trips and money bent around her: "When i stayed a month in japan just to cope for [seiyuu] bday
+  event", "10 events for this trip", "I just avoid spending on food" to afford events ->
+  ["life_impact"] (add "spending" when money is the point), "real".
 - Wanting to be a thing on or near her body, or a life spent on it: "i wish i was an eyebrow
   mite" / "imagine spending your entire life on [seiyuu]'s brows" / "that would be a perfect life"
   -> ["bodily_servitude", "worship"], "real", usually "bit", and each line of the riff is flagged.
