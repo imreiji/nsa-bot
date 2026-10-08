@@ -1363,7 +1363,8 @@ def evaluation_embed(guild_id: int, r: dict) -> discord.Embed:
             row("Scored 10", "tens"),
             f"**Score spread now:** `{' '.join(str(x) for x in a['dist'])}` (0→10)",
             f"Dropped for no quote: {r['stats'].get('no_evidence', 0)} · distress: {r['stats'].get('distress', 0)} · "
-            f"{r['calls']} calls · {r['tokens']:,} tokens",
+            + (f"⚠️ {r['stats']['over_100k']} calls over 100k tokens · " if r['stats'].get('over_100k') else "")
+            + f"{r['calls']} calls · {r['tokens']:,} tokens",
             *([f"⚠️ **{r['asked'] - r['n']} of {r['asked']} posts left out** (the API kept failing): "
                + ", ".join(f"{k} ×{v}" for k, v in r["failed"].items() if "declined" not in k)]
               if r.get("asked", r["n"]) > r["n"] else []),

@@ -197,7 +197,7 @@ def test_agent_refusals_and_failures():
 
 
 def test_sync_agent_pushes_the_judge_prompt_only_when_it_changed():
-    from nsabot.judge import JUDGE_PROMPT
+    from nsabot.judge import CLAUDE_JUDGE_PROMPT as JUDGE_PROMPT
     judge, _ = agent_judge([])
     updates = []
 
@@ -218,3 +218,22 @@ def test_sync_agent_pushes_the_judge_prompt_only_when_it_changed():
     judge.client.beta.agents = NS(retrieve=retrieve_current, update=update)
     asyncio.run(judge.sync_agent())
     assert len(updates) == 1
+
+
+def test_claude_gets_its_own_judge_prompt_with_the_same_rules():
+    from nsabot.judge import CLAUDE_JUDGE_PROMPT, JUDGE_PROMPT
+    judge, sent = claude_judge()
+    asyncio.run(judge.judge({"messages": [{"i": 0, "text": "x"}]}, 1))
+    assert sent[0]["system"][0]["text"] == CLAUDE_JUDGE_PROMPT
+    assert "STEP 1. Things you never flag" in CLAUDE_JUDGE_PROMPT and "<knowledge>" in CLAUDE_JUDGE_PROMPT
+    assert JUDGE_PROMPT.endswith(CLAUDE_JUDGE_PROMPT.split("<rules>\n")[1].split("\n</rules>")[0])
+    assert Judge("k", "deepseek-flash", "http://x", DB(":memory:")).judge_prompt == JUDGE_PROMPT
+
+
+def test_prompts_over_haikus_cheap_tier_are_flagged():
+    from nsabot.judge import PARSE_STATS
+    PARSE_STATS.clear()
+    judge, _ = claude_judge()
+    judge._check_prompt_size(40_000)
+    judge._check_prompt_size(120_000)
+    assert PARSE_STATS["over_100k"] == 1
