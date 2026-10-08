@@ -327,6 +327,19 @@ in the Console's session viewer. Sessions add $0.08 per session-hour of run time
 agent's prompt. `/model` shows the agent in use. The agent runs the same Claude model, so judging
 quality is the model's: Haiku 5.5 measured below DeepSeek on `/evaluate`.
 
+#### Anthropic API limits
+
+- **Rate limits** (per minute: requests, input and output tokens; new accounts start lower, see
+  Settings → Limits in the Console): the bot runs 8 calls at once on Claude unless
+  `NSA_CONCURRENCY` says otherwise, and each call waits out a 429 for as long as the API asks (up to
+  6 retries). Cached prompt tokens don't count toward the input limit; output (thinking included)
+  is usually the one you hit.
+- **Spending caps** (the tier's monthly cap, or a limit you set in the Console): retrying can't
+  help, so a sweep stops at the first such error, leaves the rest queued, and says so in its
+  summary; `/evaluate` reports the posts it couldn't judge.
+- **Haiku 5.5's 100k price step**: judge calls stay well under it; any call over 100k tokens is
+  logged and counted in `/evaluate`.
+
 To go back to DeepSeek, set `NSA_PROVIDER=deepseek` and `DEEPSEEK_API_KEY` (from
 <https://platform.deepseek.com>) and restart; the `DEEPSEEK_*` settings still apply there.
 

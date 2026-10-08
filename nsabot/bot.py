@@ -21,8 +21,8 @@ from dotenv import load_dotenv
 
 from . import api, evaluate, scoring
 from .db import DB, Message
-from .judge import (PARSE_STATS, VAR_NOTE, Judge, Refused, Truncated, Verdict, anchors_text, build_payload,
-                    message_time)
+from .judge import (PARSE_STATS, VAR_NOTE, Judge, Refused, SpendCapReached, Truncated, Verdict, anchors_text,
+                    build_payload, message_time)
 
 log = logging.getLogger("nsabot")
 
@@ -73,7 +73,10 @@ IMAGE_MAX_BYTES = 8 * 1024 * 1024
 IMAGE_TYPES = ("image/jpeg", "image/png", "image/webp")  # no GIFs or stickers
 QUIPS = os.getenv("NSA_QUIPS", "on").lower() not in ("off", "0", "false")  # the judge decides when to joke
 QUIP_COOLDOWN = float(os.getenv("NSA_QUIP_COOLDOWN_MINUTES", "30")) * 60  # at most one per server this often
-CONCURRENCY = max(1, int(os.getenv("NSA_CONCURRENCY", "16")))  # DeepSeek calls in flight at once
+# Model calls in flight at once. Claude's per-minute limits (output tokens above all; new accounts
+# start lower) are tighter than DeepSeek's, so it starts at 8.
+CONCURRENCY = max(1, int(os.getenv("NSA_CONCURRENCY")
+                         or ("8" if os.getenv("NSA_PROVIDER", "anthropic").lower() == "anthropic" else "16")))
 CONTEXT_MESSAGES = int(os.getenv("NSA_CONTEXT_MESSAGES", "15"))  # earlier messages shown before each batch
 AFTER_MESSAGES = 5  # later messages shown after each batch when they exist (how people reacted)
 USER_RATE = int(os.getenv("NSA_USER_RATE", "10"))  # live posts queued per user per minute; extra spam is dropped
@@ -539,6 +542,9 @@ async def scrape(channel: Scannable, opted_out: set[int], progress: Progress | N
     return to_score
 
 
+sweep_stops: dict[int, str] = {}  # guild -> why its last sweep stopped early (shown in the summary)
+
+
 async def judge_backlog(guild: discord.Guild, progress=None, max_window: int | None = None) -> tuple[int, int]:
     """Run every queued message through DeepSeek. Returns (judged, flagged).
 
@@ -547,6 +553,7 @@ async def judge_backlog(guild: discord.Guild, progress=None, max_window: int | N
     max_window, a batch also spans at most that many messages (for scattered posts, so a call
     doesn't drag in everything between them as context).
     """
+    sweep_stops.pop(guild.id, None)
     rows = db.unjudged(guild.id)
     batches: asyncio.Queue[tuple[int, list[int]]] = asyncio.Queue()
     for batch in evaluate.group_batches([(r["channel_id"], r["id"]) for r in rows], db.count_between,
@@ -595,6 +602,11 @@ async def judge_backlog(guild: discord.Guild, progress=None, max_window: int | N
                 # One post the model won't judge: file it as 0 so it isn't retried on every sweep.
                 log.warning("post %s %s; filed as not judged (0)", ids[0], e)
                 db.save_verdicts([(ids[0], 0, "declined by the model")], scoring.RUBRIC_VERSION)
+                continue
+            except SpendCapReached as e:  # no point retrying anything until the cap resets or is raised
+                log.error("API spending cap reached, stopping this sweep: %s", e)
+                sweep_stops[guild.id] = "the API account hit its spending cap (raise it in the Anthropic Console)"
+                dead.set()
                 continue
             except Exception:
                 log.exception("judge batch failed; leaving %d messages queued", len(order))
@@ -970,7 +982,8 @@ async def run_scan(ctx: commands.Context, channels: list[discord.abc.Messageable
         left = db.count_unjudged(ctx.guild.id)
         notes = []
         if left:
-            notes.append(f"{left} posts failed (API errors), rerun to retry.")
+            notes.append(f"{left} posts not judged: {sweep_stops[ctx.guild.id]}." if ctx.guild.id in sweep_stops
+                         else f"{left} posts failed (API errors), rerun to retry.")
         if ctx.guild.id not in watching:
             notes.append(f"No report channel set (`{PREFIX}watch #channel`), so nothing was posted.")
         log.info("sweep complete: %d queued, %d judged, %d flagged, %d posted, %d left", scraped, judged, flagged, posted, left)
@@ -1262,7 +1275,8 @@ async def rescore(ctx: commands.Context, scope: Literal["all", "flagged"] = "all
         left = db.count_unjudged(ctx.guild.id)
         log.info("rescore complete: %d judged, %d flagged, %d left", judged, flagged, left)
         await status.edit(content=f"✅ Rescore done: {judged:,} posts re-scored, {flagged:,} kimoi."
-                          + (f" {left:,} still queued (API errors), run the same `/rescore` again to finish them."
+                          + (f" {left:,} still queued: {sweep_stops[ctx.guild.id]}." if left and ctx.guild.id in sweep_stops
+                             else f" {left:,} still queued (API errors), run the same `/rescore` again to finish them."
                              if left else "")
                           + " Old history isn't re-posted to the report channel.")
 
@@ -1306,6 +1320,9 @@ async def run_evaluation(guild: discord.Guild, progress=None, limit: int | None 
                 except Refused as e:
                     log.warning("evaluation: batch of %d %s", len(ids), e)
                     refused = True
+                    break
+                except SpendCapReached:
+                    cause = "API spending cap reached"
                     break
                 except Exception as e:
                     log.exception("evaluation batch failed (attempt %d)", attempt + 1)

@@ -304,6 +304,23 @@ class Truncated(Exception):
     """The model used its whole output budget (usually thinking) before finishing the answer."""
 
 
+class SpendCapReached(Exception):
+    """The API account hit a spending cap (the tier's monthly cap or one set in the Console).
+    Retrying can't help until the cap resets or is raised, so sweeps stop on it."""
+
+
+def spend_cap(e: Exception) -> bool:
+    """Anthropic's spend-cap errors: a 429 with error_code enforced_spend_limit_reached (tier cap),
+    or a 400 'You have reached your specified ... usage limits' (a limit set in the Console)."""
+    if isinstance(e, anthropic.RateLimitError):
+        body = getattr(e, "body", None) or {}
+        err = body.get("error", {}) if isinstance(body, dict) else {}
+        return (err.get("details") or {}).get("error_code") == "enforced_spend_limit_reached"
+    if isinstance(e, anthropic.BadRequestError):
+        return "reached your specified" in str(e)
+    return False
+
+
 class Refused(Exception):
     """The model's safety classifier declined the request (Claude's stop_reason "refusal")."""
 
@@ -399,14 +416,19 @@ class Judge:
         effort = (self.effort if self.effort in ANTHROPIC_EFFORTS else None) if thinking else "low"
         # Thinking counts against max_tokens, so leave room for it even at low effort.
         budget = max_tokens + (self.thinking_tokens if thinking else 4000)
-        async with self.client.messages.stream(
-            model=self.model,
-            max_tokens=budget,
-            system=system,
-            messages=chat,
-            **({"output_config": {"effort": effort}} if effort else {}),
-        ) as stream:
-            msg = await stream.get_final_message()
+        try:
+            async with self.client.messages.stream(
+                model=self.model,
+                max_tokens=budget,
+                system=system,
+                messages=chat,
+                **({"output_config": {"effort": effort}} if effort else {}),
+            ) as stream:
+                msg = await stream.get_final_message()
+        except anthropic.APIStatusError as e:
+            if spend_cap(e):
+                raise SpendCapReached(str(e)) from e
+            raise
         usage = msg.usage
         self.db.add_tokens(usage.input_tokens + usage.output_tokens
                            + (usage.cache_creation_input_tokens or 0) + (usage.cache_read_input_tokens or 0))
@@ -526,12 +548,17 @@ class Judge:
         """One judge batch as one Managed Agents session: open the stream, send the batch, collect
         the agent's text until it goes idle. Each session has a small spend cap."""
         sessions = self.client.beta.sessions
-        session = await sessions.create(
-            agent=self.agent_id,
-            environment_id=self.environment_id,
-            title="NSA judge batch",
-            budget={"type": "limit", "max_list_cost": {"amount": f"{self.agent_budget_usd:.2f}", "currency": "USD"}},
-        )
+        try:
+            session = await sessions.create(
+                agent=self.agent_id,
+                environment_id=self.environment_id,
+                title="NSA judge batch",
+                budget={"type": "limit", "max_list_cost": {"amount": f"{self.agent_budget_usd:.2f}", "currency": "USD"}},
+            )
+        except anthropic.APIStatusError as e:
+            if spend_cap(e):
+                raise SpendCapReached(str(e)) from e
+            raise
         text: list[str] = []
         stop, done = None, False
         try:

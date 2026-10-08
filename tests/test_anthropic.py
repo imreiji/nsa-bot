@@ -237,3 +237,41 @@ def test_prompts_over_haikus_cheap_tier_are_flagged():
     judge._check_prompt_size(40_000)
     judge._check_prompt_size(120_000)
     assert PARSE_STATS["over_100k"] == 1
+
+
+def api_error(cls, status, body):
+    import httpx2
+    request = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    return cls(str(body), response=httpx2.Response(status, request=request), body=body)
+
+
+def test_spend_caps_are_told_apart_from_rate_limits():
+    import anthropic
+    from nsabot.judge import spend_cap
+    cap = api_error(anthropic.RateLimitError, 429, {"type": "error", "error": {
+        "type": "rate_limit_error", "message": "You have reached your API usage limits",
+        "details": {"error_code": "enforced_spend_limit_reached"}}})
+    limit = api_error(anthropic.RateLimitError, 429, {"type": "error", "error": {"type": "rate_limit_error",
+                                                                                 "message": "Number of requests"}})
+    own = api_error(anthropic.BadRequestError, 400, {"type": "error", "error": {
+        "type": "invalid_request_error", "message": "You have reached your specified API usage limits"}})
+    assert spend_cap(cap) and spend_cap(own) and not spend_cap(limit)
+
+
+def test_a_spend_cap_stops_the_sweep_at_once(monkeypatch):
+    from nsabot.judge import SpendCapReached
+    b.db.conn.execute("DELETE FROM messages")
+    b.db.save_batch(50, 400, [Message(i, 10, 50, 5, "u", f"post {i}") for i in range(1, 401)])
+    calls = []
+
+    async def judge_with_quip(*args, **kwargs):
+        calls.append(1)
+        raise SpendCapReached("enforced_spend_limit_reached")
+
+    monkeypatch.setattr(b.judge, "judge_with_quip", judge_with_quip)
+    monkeypatch.setattr(b, "CONCURRENCY", 1)
+    guild = NS(id=10, get_channel_or_thread=lambda _: NS(name="general", topic=None, is_nsfw=lambda: False),
+               get_channel=lambda _: None)
+    asyncio.run(b.judge_backlog(guild))
+    assert len(calls) == 1 and b.db.count_unjudged(10) == 400  # stopped on the first one, nothing lost
+    assert "spending cap" in b.sweep_stops[10]
