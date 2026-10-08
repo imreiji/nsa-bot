@@ -306,6 +306,26 @@ The bot runs on **Claude Haiku 5.5** by default (`NSA_PROVIDER=anthropic`). Get 
   retried until the one post it objects to is found; that post is filed as 0 ("declined by the
   model") so it isn't retried forever.
 
+#### Judging through a Console-built agent (optional)
+
+With `NSA_PROVIDER=anthropic`, judge batches can run on a **Managed Agent** you build in the Claude
+Console instead of direct API calls. Roasts, dossiers and chat replies stay on direct calls.
+
+1. Console → **Agents → Environments → New**: type cloud, networking **limited** with nothing allowed
+   (the judge reads the batch and answers; it never touches the network). Copy the `env_...` ID.
+2. Console → **Agents → New agent**: name it (e.g. "NSA judge"), pick the model (`claude-haiku-5-5`)
+   and effort, and give it **no tools, MCP servers or skills**. Leave the system prompt empty: the bot
+   writes its judge prompt into the agent on startup and keeps it in sync on every deploy (a new agent
+   version only when the prompt changed). Copy the `agent_...` ID.
+3. `.env`: `NSA_AGENT_ID=agent_...`, `NSA_ENVIRONMENT_ID=env_...`, then restart.
+
+Each batch becomes one session with a hard spend cap (`NSA_AGENT_BUDGET_USD`, default $0.25), and is
+deleted once judged unless `NSA_AGENT_KEEP_SESSIONS=on`; failed sessions are kept so you can open them
+in the Console's session viewer. Sessions add $0.08 per session-hour of run time on top of tokens
+(seconds per batch). Server notes and calibration examples are sent with each batch rather than in the
+agent's prompt. `/model` shows the agent in use. The agent runs the same Claude model, so judging
+quality is the model's: Haiku 5.5 measured below DeepSeek on `/evaluate`.
+
 To go back to DeepSeek, set `NSA_PROVIDER=deepseek` and `DEEPSEEK_API_KEY` (from
 <https://platform.deepseek.com>) and restart; the `DEEPSEEK_*` settings still apply there.
 

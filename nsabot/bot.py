@@ -96,7 +96,14 @@ if PROVIDER == "anthropic":
         thinking_tokens=int(os.getenv("NSA_THINKING_TOKENS", "32000")),
         db=db,
         provider="anthropic",
+        # Judge batches go to a Managed Agent built in the Claude Console when these are set
+        agent_id=os.getenv("NSA_AGENT_ID") or None,
+        environment_id=os.getenv("NSA_ENVIRONMENT_ID") or None,
+        agent_budget_usd=float(os.getenv("NSA_AGENT_BUDGET_USD", "0.25")),  # spend cap per batch session
+        keep_sessions=os.getenv("NSA_AGENT_KEEP_SESSIONS", "off").lower() in ("on", "1", "true"),
     )
+    if bool(judge.agent_id) != bool(judge.environment_id):
+        raise SystemExit("Set both NSA_AGENT_ID and NSA_ENVIRONMENT_ID (or neither) to use a Console-built judge agent")
 else:
     judge = Judge(
         api_key=os.environ["DEEPSEEK_API_KEY"],
@@ -1033,6 +1040,9 @@ async def model(ctx: commands.Context):
     embed = discord.Embed(title="🧠 Analyst hardware", color=0x5865F2)
     embed.add_field(name="Model", value=f"`{judge.model}` via `{judge.client.base_url.host}` ({judge.provider})",
                     inline=False)
+    if judge.agent_id:
+        embed.add_field(name="Judge agent", value=f"`{judge.agent_model}` · Managed Agent `{judge.agent_id}` "
+                        "(one session per batch)", inline=False)
     embed.add_field(
         name="Scoring posts",
         value=f"thinking {on_off(judge.thinking)}"
@@ -1767,6 +1777,10 @@ def guild_name(guild_id: int) -> str | None:
 
 async def setup() -> None:
     await sync_slash_commands()
+    if judge.agent_id:
+        await judge.sync_agent()
+        log.info("judging through Managed Agent %s (%s) in environment %s",
+                 judge.agent_id, judge.agent_model, judge.environment_id)
     if API_KEYS:
         app = api.build_app(db, API_KEYS, GUILD_IDS, per_minute=API_RATE, channel_name=channel_name,
                             guild_name=guild_name,

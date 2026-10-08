@@ -122,3 +122,99 @@ def test_evaluation_narrows_refusals_and_reports_dropped_posts(monkeypatch, tmp_
     assert report["failed"] == {"declined by the model (scored 0)": 1, "RuntimeError": 8}
     embed = b.evaluation_embed(10, report)
     assert "8 of 16 posts left out" in embed.description and "RuntimeError ×8" in embed.description
+
+
+# --- the judge as a Console-built Managed Agent -------------------------------------------------
+
+def agent_judge(events, **kw):
+    from nsabot import judge as J
+    judge = Judge("key", "claude-haiku-5-5", None, DB(":memory:"), provider="anthropic",
+                  agent_id="agent_1", environment_id="env_1", **kw)
+    calls = {"create": [], "send": [], "delete": []}
+
+    class Stream:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def __aiter__(self):
+            async def gen():
+                for e in events:
+                    yield e
+            return gen()
+
+    async def create(**kwargs):
+        calls["create"].append(kwargs)
+        return NS(id="sesn_1")
+
+    async def stream(session_id):
+        return Stream()
+
+    async def send(session_id, events):
+        calls["send"].append(events)
+
+    async def delete(session_id):
+        calls["delete"].append(session_id)
+
+    judge.client.beta.sessions = NS(create=create, delete=delete, events=NS(stream=stream, send=send))
+    return judge, calls
+
+
+def usage_event():
+    return NS(type="span.model_request_end",
+              model_usage=NS(input_tokens=10, output_tokens=5, cache_creation_input_tokens=0, cache_read_input_tokens=100))
+
+
+def test_agent_judge_runs_one_capped_session_per_batch():
+    reply = '{"flagged": [{"i": 0, "evidence": "my wife", "behaviours": ["worship"], "target": "character"}]}'
+    judge, calls = agent_judge([NS(type="agent.message", content=[NS(type="text", text=reply)]), usage_event(),
+                                NS(type="session.status_idle", stop_reason=NS(type="end_turn"), stop_details=None)])
+    result, _ = asyncio.run(judge.judge_with_quip({"messages": [{"i": 0, "text": "she is my wife"}]}, 1, quip=False,
+                                                  anchors="\nServer notes: x",
+                                                  images=[(0, "data:image/png;base64,AAAA")]))
+    assert result[0].severity > 0 and judge.db.tokens_today() == 115
+    create = calls["create"][0]
+    assert create["agent"] == "agent_1" and create["environment_id"] == "env_1"
+    assert create["budget"] == {"type": "limit", "max_list_cost": {"amount": "0.25", "currency": "USD"}}
+    content = calls["send"][0][0]["content"]
+    assert calls["send"][0][0]["type"] == "user.message"
+    assert content[0]["text"].startswith("Context for this server:") and "Server notes" in content[0]["text"]
+    assert {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "AAAA"}} in content
+    assert calls["delete"] == ["sesn_1"]  # throwaway session cleaned up
+
+
+def test_agent_refusals_and_failures():
+    judge, calls = agent_judge([NS(type="session.status_idle", stop_reason=NS(type="refusal"),
+                                   stop_details=NS(category="general_harms"))])
+    with pytest.raises(Refused, match="general_harms"):
+        asyncio.run(judge.judge({"messages": [{"i": 0, "text": "x"}]}, 1))
+    judge, calls = agent_judge([NS(type="session.status_idle", stop_reason=NS(type="budget_reached"), stop_details=None)])
+    with pytest.raises(RuntimeError, match="budget_reached"):
+        asyncio.run(judge.judge({"messages": [{"i": 0, "text": "x"}]}, 1))
+    assert calls["delete"] == []  # failed sessions are kept to inspect in the Console
+
+
+def test_sync_agent_pushes_the_judge_prompt_only_when_it_changed():
+    from nsabot.judge import JUDGE_PROMPT
+    judge, _ = agent_judge([])
+    updates = []
+
+    async def retrieve(agent_id):
+        return NS(model=NS(id="claude-haiku-5-5"), system="old prompt", tools=[], version=1)
+
+    async def update(agent_id, system):
+        updates.append(system)
+        return NS(model=NS(id="claude-haiku-5-5"), system=system, tools=[], version=2)
+
+    judge.client.beta.agents = NS(retrieve=retrieve, update=update)
+    asyncio.run(judge.sync_agent())
+    assert updates == [JUDGE_PROMPT] and judge.agent_model == "claude-haiku-5-5"
+
+    async def retrieve_current(agent_id):
+        return NS(model=NS(id="claude-haiku-5-5"), system=JUDGE_PROMPT, tools=[], version=2)
+
+    judge.client.beta.agents = NS(retrieve=retrieve_current, update=update)
+    asyncio.run(judge.sync_agent())
+    assert len(updates) == 1

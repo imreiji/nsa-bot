@@ -298,8 +298,14 @@ class Judge:
     def __init__(
         self, api_key: str, model: str, base_url: str | None, db: DB, thinking: bool = True, effort: str | None = None,
         thinking_tokens: int = 32000, provider: str = "deepseek",
+        agent_id: str | None = None, environment_id: str | None = None, agent_budget_usd: float = 0.25,
+        keep_sessions: bool = False,
     ):
         self.provider = provider
+        # Judge batches can go to a Claude Managed Agent (built in the Console) instead of a direct call.
+        self.agent_id, self.environment_id = agent_id, environment_id
+        self.agent_budget_usd, self.keep_sessions = agent_budget_usd, keep_sessions
+        self.agent_model: str | None = None  # filled in by sync_agent()
         # Bounded retries/timeouts so a flaky API can't stall a sweep or multiply spend.
         # Thinking at high effort can take a few minutes on a full batch.
         timeout = 300 if thinking else 120
@@ -402,18 +408,84 @@ class Judge:
             user.append({"role": "user", "content": note})
         if quip:  # after the batch, so the system prompt stays a cacheable prefix
             user.append({"role": "user", "content": QUIP_REQUEST})
-        resp = await self._complete(
-            messages=[{"role": "system", "content": JUDGE_PROMPT + (anchors or "")}, *user],
-            response_format={"type": "json_object"},
-            temperature=0.2,
-            max_tokens=2000,
-        )
+        if self.agent_id:
+            # The agent holds JUDGE_PROMPT as its system prompt (see sync_agent); this server's notes
+            # and calibration examples ride along at the top of the message instead.
+            blocks = [{"type": "text", "text": f"Context for this server:{anchors}"}] if anchors else []
+            for m in user:
+                blocks += [m["content"]] if isinstance(m["content"], dict) else (
+                    [{"type": "text", "text": m["content"]}] if isinstance(m["content"], str) else m["content"])
+            resp = await self._judge_via_agent(anthropic_content(blocks))
+        else:
+            resp = await self._complete(
+                messages=[{"role": "system", "content": JUDGE_PROMPT + (anchors or "")}, *user],
+                response_format={"type": "json_object"},
+                temperature=0.2,
+                max_tokens=2000,
+            )
         if resp.truncated:
             raise Truncated(f"ran out of output tokens on {n} posts")
         raw = resp.text
         texts = [m.get("text", "") for m in payload.get("messages", []) if "i" in m]
         verdicts = parse_verdicts(raw, n, texts if len(texts) == n else None, set(counts))
         return verdicts, parse_quip(raw) if quip else None
+
+    async def sync_agent(self) -> None:
+        """Keep the Console-built agent's system prompt equal to JUDGE_PROMPT, so prompt changes in
+        this repo reach it on the next deploy. An unchanged prompt creates no new agent version."""
+        agent = await self.client.beta.agents.retrieve(self.agent_id)
+        self.agent_model = getattr(agent.model, "id", None) or str(agent.model)
+        if (agent.system or "") != JUDGE_PROMPT:
+            agent = await self.client.beta.agents.update(self.agent_id, system=JUDGE_PROMPT)
+            log.info("judge agent %s: system prompt synced (now version %s)", self.agent_id, agent.version)
+        if agent.tools:
+            log.warning("judge agent %s has tools enabled; the judge needs none", self.agent_id)
+
+    async def _judge_via_agent(self, content: list[dict]) -> Reply:
+        """One judge batch as one Managed Agents session: open the stream, send the batch, collect
+        the agent's text until it goes idle. Each session has a small spend cap."""
+        sessions = self.client.beta.sessions
+        session = await sessions.create(
+            agent=self.agent_id,
+            environment_id=self.environment_id,
+            title="NSA judge batch",
+            budget={"type": "limit", "max_list_cost": {"amount": f"{self.agent_budget_usd:.2f}", "currency": "USD"}},
+        )
+        text: list[str] = []
+        stop, done = None, False
+        try:
+            async with await sessions.events.stream(session.id) as stream:
+                await sessions.events.send(session.id, events=[{"type": "user.message", "content": content}])
+                async for event in stream:
+                    if event.type == "agent.message":
+                        text += [block.text for block in event.content if block.type == "text"]
+                    elif event.type == "span.model_request_end":
+                        u = event.model_usage
+                        self.db.add_tokens(u.input_tokens + u.output_tokens + u.cache_creation_input_tokens
+                                           + u.cache_read_input_tokens)
+                    elif event.type == "session.error":
+                        log.warning("judge agent session %s error: %s", session.id, event.error)
+                    elif event.type == "session.status_idle":
+                        stop = event.stop_reason.type
+                        if stop == "requires_action":  # the judge has no tools; nothing should ask
+                            raise RuntimeError(f"judge agent session {session.id} asked for a tool")
+                        if stop == "refusal":
+                            category = getattr(event.stop_details, "category", None) if event.stop_details else None
+                            raise Refused(f"declined by the model ({category or 'no category'})")
+                        break
+                    elif event.type == "session.status_terminated":
+                        stop = "terminated"
+                        break
+            if stop != "end_turn":
+                raise RuntimeError(f"judge agent session {session.id} stopped: {stop}")
+            done = True
+            return Reply("".join(text), False)
+        finally:
+            if done and not self.keep_sessions:
+                try:
+                    await sessions.delete(session.id)  # one throwaway session per batch; keep the Console tidy
+                except anthropic.APIError:
+                    log.warning("couldn't delete judge session %s", session.id)
 
     async def roast(self, name: str, stats: str, posts: list[tuple[int, str, str]]) -> str:
         """posts: (severity, text, reason)."""
