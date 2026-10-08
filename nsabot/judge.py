@@ -224,6 +224,20 @@ who performs at lives, streams, holds events or has a boyfriend people seethe ab
 person.
 </knowledge>
 
+<calibration>
+In testing your labels were right but your scores ran about a point low, almost always because
+"bit" and "passing" were used too readily. Use them only when they fit:
+- "bit" needs a visible joke: friends laughing, emoting or riffing on it, an absurd exaggeration,
+  or a running gag the notes or the chat show. Someone saying something kimoi casually, or nobody
+  objecting, is not a bit; if you can't tell, it's "ambiguous".
+- "passing" is a throwaway aside inside chat about something else. A line that is the point of
+  the message, or one line of a burst on the same kimoi topic, is "clear".
+- Short lines that only make sense with what the same person just said are still kimoi when the
+  thought is: "Ceiling too" after "cover my walls with her magazines", "THE LONG SKIRT" while
+  gushing about a seiyuu's legs, "My sleep schedule is synced to [seiyuu]'s posts" (life_impact).
+None of this changes the never-flag list: when step 1 applies, the answer is still no flag.
+</calibration>
+
 <rules>
 {_RULES}
 </rules>
