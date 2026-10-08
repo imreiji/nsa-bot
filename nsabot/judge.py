@@ -252,6 +252,11 @@ Four kinds of real kimoi you tended to miss:
 - A poster's own fantasy asked as a question is theirs: "would you let [seiyuu] kabedon you and call
   you her little pogchamp" is gachikoi or horny from the poster, not pointing at someone else.
 
+One never-flag case you got wrong: members hunting down another MEMBER's alt account is friend
+banter (rule e), even when the account is named after the idols it follows. After "what name did
+[member] use for this sign event" / "where is the puremon twitter alt", lines like "only like 700
+accs to look through" or "I want to find the twitter smurf" are about the member: not flagged.
+
 None of this changes the never-flag list: when step 1 applies, the answer is still no flag.
 </calibration>
 
