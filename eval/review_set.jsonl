@@ -52,7 +52,7 @@
 {"id": "1420972742265802773", "should": 4, "verdict": "ok", "safety": null, "bot": 5}
 {"id": "1420973623207923712", "should": 5, "verdict": "ok", "safety": null, "bot": 5}
 {"id": "1420975078182752268", "should": 5, "verdict": "ok", "safety": null, "bot": 5}
-{"id": "1420998854685495377", "should": 2, "verdict": "over", "safety": null, "bot": 8}
+{"id": "1420998854685495377", "should": 8, "verdict": "ok", "safety": null, "bot": 8}
 {"id": "1420999088408629298", "should": 6, "verdict": "ok", "safety": null, "bot": 6}
 {"id": "1421001643234951228", "should": 5, "verdict": "ok", "safety": null, "bot": 5}
 {"id": "1421148939142565919", "should": 2, "verdict": "ok", "safety": null, "bot": 2}
@@ -64,7 +64,7 @@
 {"id": "1422035326842699808", "should": 0, "verdict": "not_kimoi", "safety": null, "bot": 2}
 {"id": "1422080690375102538", "should": 0, "verdict": "not_kimoi", "safety": null, "bot": 4}
 {"id": "1422082236110471179", "should": 2, "verdict": "over", "safety": null, "bot": 10}
-{"id": "1422138842722603090", "should": 6, "verdict": "under", "safety": null, "bot": 4}
+{"id": "1422138842722603090", "should": 0, "verdict": "safety", "safety": "self_harm", "bot": 4}
 {"id": "1422205026813608057", "should": 5, "verdict": "ok", "safety": null, "bot": 5}
 {"id": "1423433814960509019", "should": 8, "verdict": "over", "safety": null, "bot": 10}
 {"id": "1423618820450287658", "should": 8, "verdict": "over", "safety": null, "bot": 10}
@@ -222,7 +222,7 @@
 {"id": "1455888331673042988", "should": 0, "verdict": "not_kimoi", "safety": null, "bot": 3}
 {"id": "1455942684052164681", "should": 2, "verdict": "over", "safety": null, "bot": 4}
 {"id": "1456050243258023967", "should": 4, "verdict": "ok", "safety": null, "bot": 4}
-{"id": "1456140957228597381", "should": 0, "verdict": "safety", "safety": "other", "bot": 10}
+{"id": "1456140957228597381", "should": 6, "verdict": "over", "safety": null, "bot": 10}
 {"id": "1456142746069897258", "should": 0, "verdict": "safety", "safety": "self_harm", "bot": 10}
 {"id": "1456142988253069364", "should": 0, "verdict": "safety", "safety": "self_harm", "bot": 9}
 {"id": "1456163252919599194", "should": 2, "verdict": "ok", "safety": null, "bot": 2}

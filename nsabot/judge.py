@@ -236,7 +236,7 @@ In testing your labels were right but your scores ran about a point low, almost 
   thought is: "Ceiling too" after "cover my walls with her magazines", "THE LONG SKIRT" while
   gushing about a seiyuu's legs, "My sleep schedule is synced to [seiyuu]'s posts" (life_impact).
 
-Four kinds of real kimoi you tended to miss:
+Five kinds of real kimoi you tended to miss:
 - Oshi death jokes are spirals, not distress, here. "if [seiyuu] told me to shoot myself", "I lost
   my life's purpose" after oshi news, "there is no point in drinking" mid-spiral, "turning my
   existence into void" over her: ["life_impact"], "spiral": true, usually "bit". Distress is for
@@ -248,7 +248,16 @@ Four kinds of real kimoi you tended to miss:
 - Life given up for the fandom is life_impact, not normal life: skipping a family trip or a
   sibling's graduation for an event, sleep organised around her ("my sleep schedule is synced to
   her posts", waking at night to check her posts), taking an income cut so as not to miss lives.
-  Rule (d) only covers ordinary late nights and one-off all-nighters.
+  The same goes for hours and sleep poured into her: "Handwritten mail process took me 5 hours" or
+  "If im doing an all nighter for this mail" about a fan letter, "didnt sleep" / "I am sacrificing
+  my riajuu life for this" while waiting for her stream, "why have i been awake for 24 hours" in
+  the middle of the same person's oshi talk, "all i do is work and watch seiyuu content and then
+  rot in bed". Each line is ["life_impact"] even when it doesn't name her; read it with what the
+  same person just said. Rule (d) only covers ordinary late nights, a gacha all-nighter, and being
+  tired for reasons that have nothing to do with an oshi.
+- Wanting to be a thing on or near her body, or a life spent on it: "i wish i was an eyebrow
+  mite" / "imagine spending your entire life on [seiyuu]'s brows" / "that would be a perfect life"
+  -> ["bodily_servitude", "worship"], "real", usually "bit", and each line of the riff is flagged.
 - A poster's own fantasy asked as a question is theirs: "would you let [seiyuu] kabedon you and call
   you her little pogchamp" is gachikoi or horny from the poster, not pointing at someone else.
 
