@@ -432,6 +432,7 @@ class Judge:
         """
         images = images or []
         counts = Counter(i for i, _ in images)
+        PARSE_STATS["images_sent"] += len(images)
         for m in payload.get("messages", []):
             if m.get("i") in counts:
                 m["images"] = counts[m["i"]]
@@ -547,6 +548,15 @@ class Judge:
             temperature=1.0,
             max_tokens=400,
         )
+        return resp.text.strip()
+
+    async def describe_images(self, images: list[str]) -> str:
+        """One line per picture, as the model sees it (for /look: proves pictures get through)."""
+        content = [{"type": "text", "text": "Describe each picture in one short line, numbered 1, 2, ... "
+                                            "Say what is in it, plainly. Plain text only."}]
+        content += [{"type": "image_url", "image_url": {"url": url}} for url in images]
+        resp = await self._complete(messages=[{"role": "user", "content": content}],
+                                    temperature=0.2, max_tokens=300, thinking=False)
         return resp.text.strip()
 
     async def respond(self, payload: dict, thinking: bool = False) -> str:

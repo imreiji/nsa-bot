@@ -25,12 +25,14 @@ def test_everyone_sees_public_commands_admins_also_see_admin_ones():
     assert "`/dossier [member]`" in public.fields[0].value  # public now
 
     admin = run_help(ADMIN)
-    assert [f.name for f in admin.fields] == ["Everyone", "Admins (spend API credit)"]
-    for cmd in ["scan", "scanall", "watch", "unwatch", "usage"]:
-        assert f"`/{cmd}" in admin.fields[1].value
+    assert [f.name for f in admin.fields][:2] == ["Everyone", "Admins (spend API credit)"]
+    assert all(f.name == "Admins (cont.)" for f in admin.fields[2:])  # a long list carries over
+    admin_text = "".join(f.value for f in admin.fields[1:])
+    for cmd in ["scan", "scanall", "watch", "unwatch", "usage", "look"]:
+        assert f"`/{cmd}" in admin_text
     assert all(len(f.value) <= 1024 for f in admin.fields)  # Discord's field limit
     every_command = {c.name for c in b.bot.commands}
-    listed = admin.fields[0].value + admin.fields[1].value
+    listed = admin.fields[0].value + admin_text
     assert all(f"`/{name}" in listed for name in every_command)
 
 

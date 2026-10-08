@@ -237,10 +237,20 @@ def describe_extras(m: discord.Message) -> str | None:
     return "; ".join(parts) or None
 
 
+IMAGE_EXTENSIONS = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def is_image_attachment(a) -> bool:
+    """A picture by content type, or by file name when Discord left the type out."""
+    kind = (a.content_type or "").split(";")[0]
+    if kind:
+        return kind in IMAGE_TYPES
+    return (getattr(a, "filename", "") or "").lower().endswith(IMAGE_EXTENSIONS)
+
+
 def image_urls(m: discord.Message) -> list[str]:
     """Pictures the judge can look at: image attachments and link-preview pictures (no GIFs, stickers or video)."""
-    urls = [a.url for a in m.attachments
-            if (a.content_type or "").split(";")[0] in IMAGE_TYPES and (a.size or 0) <= IMAGE_MAX_BYTES]
+    urls = [a.url for a in m.attachments if is_image_attachment(a) and (a.size or 0) <= IMAGE_MAX_BYTES]
     for e in m.embeds:
         if e.type in ("gifv", "video"):
             continue
@@ -259,7 +269,7 @@ def classify(m: discord.Message, opted_out: set[int]) -> bool | None:
         return None
     if len(text) >= MIN_CHARS:
         return True
-    if IMAGES and any((a.content_type or "").split(";")[0] in IMAGE_TYPES for a in m.attachments):
+    if IMAGES and any(is_image_attachment(a) for a in m.attachments):
         return True  # a picture post can be judged on the picture
     if text or m.attachments or m.stickers or m.embeds or getattr(m, "message_snapshots", None):
         return False  # "w", "lol", image-only posts: tells the judge how people reacted
@@ -1364,6 +1374,7 @@ def evaluation_embed(guild_id: int, r: dict) -> discord.Embed:
             f"**Score spread now:** `{' '.join(str(x) for x in a['dist'])}` (0→10)",
             f"Dropped for no quote: {r['stats'].get('no_evidence', 0)} · distress: {r['stats'].get('distress', 0)} · "
             + (f"⚠️ {r['stats']['over_100k']} calls over 100k tokens · " if r['stats'].get('over_100k') else "")
+            + f"{r['stats'].get('images_sent', 0)} pictures sent · "
             + f"{r['calls']} calls · {r['tokens']:,} tokens",
             *([f"⚠️ **{r['asked'] - r['n']} of {r['asked']} posts left out** (the API kept failing): "
                + ", ".join(f"{k} ×{v}" for k, v in r["failed"].items() if "declined" not in k)]
@@ -1383,6 +1394,67 @@ def evaluation_embed(guild_id: int, r: dict) -> discord.Embed:
             inline=False,
         )
     return embed
+
+
+MESSAGE_LINK = re.compile(r"channels/(\d+)/(\d+)/(\d+)")
+
+
+@bot.hybrid_command(help="Test picture judging on one message: what the bot finds, downloads, sees and scores.")
+@app_commands.describe(message="The message's link (right-click or long-press it → Copy Message Link)")
+@deployer_only()
+async def look(ctx: commands.Context, message: str):
+    if ctx.interaction:
+        await ctx.defer(ephemeral=True)
+    m = MESSAGE_LINK.search(message)
+    if not m or int(m.group(1)) != ctx.guild.id:
+        await ctx.send("Give me a message link from this server.", ephemeral=True)
+        return
+    channel_id, message_id = int(m.group(2)), int(m.group(3))
+    channel = ctx.guild.get_channel_or_thread(channel_id)
+    try:
+        msg = await channel.fetch_message(message_id)
+    except (AttributeError, discord.HTTPException):
+        await ctx.send("I can't read that message.", ephemeral=True)
+        return
+    found = [f"{a.filename} ({a.content_type or 'no type'}, {(a.size or 0) // 1024} KB)" for a in msg.attachments]
+    found += [f"link preview ({e.type}, {'picture' if (e.image or e.thumbnail) else 'no picture'})" for e in msg.embeds]
+    found += [f"sticker {s.name} (skipped)" for s in msg.stickers]
+    urls = image_urls(msg) if IMAGES else []
+    pictures, steps = [], []
+    for n, url in enumerate(urls, 1):
+        data = await download_image(url)
+        steps.append(f"{n}. " + (f"downloaded ({len(data) * 3 // 4 // 1024} KB)" if data else "**download failed**"))
+        if data:
+            pictures.append(data)
+    embed = discord.Embed(title="👁️ Picture check", url=msg.jump_url, color=0x5865F2)
+    embed.add_field(name="On the message", value=clip("\n".join(found) or "nothing attached", 1000), inline=False)
+    embed.add_field(name="Sent to the model",
+                    value=("\n".join(steps) or "no usable pictures (GIFs, stickers, video and files over 8 MB are skipped)")
+                    + ("" if IMAGES else "\n`NSA_IMAGES` is off"), inline=False)
+    if pictures:
+        try:
+            embed.add_field(name=f"What {judge.agent_model or judge.model} sees",
+                            value=clip(await judge.describe_images(pictures) or "(no answer)", 1000), inline=False)
+            stored = db.get_message(message_id)
+            if stored:  # judge it the way a sweep would, with the conversation around it
+                timeline = (db.timeline(channel_id, message_id, message_id, before=CONTEXT_MESSAGES)
+                            + db.timeline_after(channel_id, message_id, AFTER_MESSAGES))
+            else:
+                timeline = [{"id": msg.id, "author_name": msg.author.display_name, "content": plain_text(msg),
+                             "reply_author": None, "reply_text": None, "extras": describe_extras(msg)}]
+            payload, order = build_payload(channel_info(ctx.guild, channel_id), timeline, [message_id])
+            result, _ = await judge.judge_with_quip(payload, len(order), quip=False, anchors=prompt_extras(ctx.guild.id),
+                                                    images=[(0, p) for p in pictures])
+            v = result.get(0, Verdict(0, None))
+            verdict = f"**{v.severity}/10**" + (f" · {scoring.describe(v.labels)}" if v.labels else "")
+            verdict += f"\n{v.reason}" if v.reason else ""
+            if v.labels and v.labels.get("evidence"):
+                verdict += f"\nquote: {v.labels['evidence']}"
+            embed.add_field(name="Judge's verdict (not saved)", value=clip(verdict, 1000), inline=False)
+        except Exception as e:
+            log.exception("/look failed")
+            embed.add_field(name="Model call failed", value=clip(f"{type(e).__name__}: {e}", 1000), inline=False)
+    await ctx.send(embed=embed, ephemeral=True)
 
 
 @bot.hybrid_command(name="evaluate", help="Test the current prompt on the reviewed posts (calls the model, nothing saved; report in DMs).")
@@ -1710,10 +1782,20 @@ async def help_(ctx: commands.Context, name: str | None = None):
         description="The Neckbeard Surveillance Agency reads the chat and ranks the kimoi.",
         color=0xE91E63,
     )
-    embed.add_field(name="Everyone", value=section(c for c in visible if not admin_only(c)), inline=False)
+    def add_section(name: str, text: str) -> None:
+        """Discord caps a field at 1024 characters: carry long lists over into more fields."""
+        chunk = ""
+        for line in text.split("\n"):
+            if chunk and len(chunk) + 1 + len(line) > 1024:
+                embed.add_field(name=name, value=chunk, inline=False)
+                name, chunk = f"{name.split(' (')[0]} (cont.)", ""
+            chunk = f"{chunk}\n{line}" if chunk else line
+        if chunk:
+            embed.add_field(name=name, value=chunk, inline=False)
+
+    add_section("Everyone", section(c for c in visible if not admin_only(c)))
     if ctx.author.id in ADMIN_IDS:
-        embed.add_field(name="Admins (spend API credit)", value=section(c for c in visible if admin_only(c)),
-                        inline=False)
+        add_section("Admins (spend API credit)", section(c for c in visible if admin_only(c)))
     embed.set_footer(text=f"/help <command> for details · every command also works with {PREFIX} · [optional] <required>")
     await ctx.send(embed=embed)
 

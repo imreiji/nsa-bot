@@ -267,3 +267,49 @@ def test_scan_has_a_recent_option():
     options = {p.name: p for p in b.bot.tree.get_command("scan").parameters}
     assert options["recent"].min_value == 1 and not options["recent"].required
     assert "recent" in {p.name for p in b.bot.tree.get_command("scanall").parameters}
+
+
+def test_pictures_without_a_content_type_are_recognised_by_file_name():
+    m = fake_message("", attachments=[NS(content_type=None, filename="IMG_1.JPG", url="a.jpg", size=10),
+                                      NS(content_type=None, filename="notes.txt", url="b.txt", size=10)])
+    assert b.image_urls(m) == ["a.jpg"] and b.classify(m, set()) is True
+
+
+def test_look_walks_one_message_through_the_picture_pipeline(monkeypatch):
+    b.db.conn.execute("DELETE FROM messages")
+    sent = []
+    msg = NS(id=77, content="look at her", clean_content="look at her", jump_url="https://discord.com/x",
+             author=NS(id=5, bot=False, display_name="yargas"), stickers=[], embeds=[], reference=None,
+             attachments=[NS(content_type="image/png", filename="legs.png", url="https://cdn/legs.png", size=2048)])
+
+    async def fetch_message(mid):
+        assert mid == 77
+        return msg
+
+    channel = NS(fetch_message=fetch_message, name="general", topic=None, is_nsfw=lambda: False)
+    guild = NS(id=GUILD, get_channel_or_thread=lambda _: channel)
+
+    async def send(*args, **kwargs):
+        sent.append(kwargs.get("embed") or args[0])
+
+    async def download(url):
+        return "data:image/png;base64,AAAA"
+
+    async def describe(images):
+        return "1. a seiyuu on stage in a short skirt"
+
+    async def judge_with_quip(payload, n, quip, note=None, anchors=None, images=None):
+        assert images == [(0, "data:image/png;base64,AAAA")] and payload["messages"][0]["i"] == 0
+        return {0: b.Verdict(4, "skirt watch", {"behaviours": ["horny"], "target": "real", "evidence": "[image]"})}, None
+
+    monkeypatch.setattr(b, "download_image", download)
+    monkeypatch.setattr(b.judge, "describe_images", describe)
+    monkeypatch.setattr(b.judge, "judge_with_quip", judge_with_quip)
+    ctx = NS(guild=guild, interaction=None, send=send, author=NS(id=1))
+    asyncio.run(b.look.callback(ctx, f"https://discord.com/channels/{GUILD}/50/77"))
+    fields = {f.name: f.value for f in sent[0].fields}
+    assert "legs.png (image/png, 2 KB)" in fields["On the message"]
+    assert fields["Sent to the model"].startswith("1. downloaded")
+    assert "short skirt" in next(v for k, v in fields.items() if k.startswith("What "))
+    assert "**4/10**" in fields["Judge's verdict (not saved)"] and "quote: [image]" in fields["Judge's verdict (not saved)"]
+    assert b.db.get_message(77) is None  # nothing saved
