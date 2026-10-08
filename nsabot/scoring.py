@@ -91,6 +91,37 @@ def score(labels: dict) -> int:
     return max(1, min(cap, total))
 
 
+def breakdown(labels: dict | None) -> str:
+    """The formula's arithmetic for one post, e.g. 'unicorn 6 + real person +1 + sincere +1 = 8'."""
+    if not labels:
+        return "no labels: not flagged"
+    labels = clean(labels)
+    if labels["distress"]:
+        return "distress: always 0"
+    if not labels["behaviours"]:
+        return "no behaviours: 0"
+    if labels["about_someone_else"]:
+        return "about someone else's kimoi: 0"
+    top = max(labels["behaviours"], key=lambda b: BASE[b])
+    parts = [f"{NAMES[top]} {BASE[top]}"]
+    for name, value in ((NAMES.get(labels["target"], labels["target"]), TARGET[labels["target"]]),
+                        (labels["intensity"], INTENSITY[labels["intensity"]]),
+                        (NAMES.get(labels["sincerity"], labels["sincerity"]), SINCERITY[labels["sincerity"]]),
+                        ("doubling down", DOUBLING_DOWN if labels["doubling_down"] else 0),
+                        ("two or more behaviours", MULTI_BONUS if len(labels["behaviours"]) > 1 else 0)):
+        if value:
+            parts.append(f"{name} {value:+d}")
+    raw = BASE[top] + sum(int(p.rsplit(" ", 1)[1]) for p in parts[1:])
+    final = score(labels)
+    text = " + ".join(parts) + f" = {raw}"
+    if final != raw:
+        why = ("oshi spiral cap" if labels["spiral"] and final == SPIRAL_CAP
+               else "2D sexual cap" if final == FICTIONAL_SEXUAL_CAP and labels["target"] in ("character", "minor")
+               else "kept between 1 and 10")
+        text += f" → {final} ({why})"
+    return text
+
+
 def describe(labels: dict | None) -> str:
     """Short tag line for reports, e.g. 'bodily/servitude · real person · sincere'."""
     if not labels:

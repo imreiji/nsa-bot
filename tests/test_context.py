@@ -298,18 +298,21 @@ def test_look_walks_one_message_through_the_picture_pipeline(monkeypatch):
     async def describe(images):
         return "1. a seiyuu on stage in a short skirt"
 
-    async def judge_with_quip(payload, n, quip, note=None, anchors=None, images=None):
+    async def judge_explained(payload, n, anchors=None, images=None):
         assert images == [(0, "data:image/png;base64,AAAA")] and payload["messages"][0]["i"] == 0
-        return {0: b.Verdict(4, "skirt watch", {"behaviours": ["horny"], "target": "real", "evidence": "[image]"})}, None
+        labels = {"behaviours": ["horny"], "target": "real", "sincerity": "bit", "evidence": "[image]"}
+        return {0: b.Verdict(5, "skirt watch", labels)}, {0: "The picture crops a seiyuu's legs on stage."}
 
     monkeypatch.setattr(b, "download_image", download)
     monkeypatch.setattr(b.judge, "describe_images", describe)
-    monkeypatch.setattr(b.judge, "judge_with_quip", judge_with_quip)
+    monkeypatch.setattr(b.judge, "judge_explained", judge_explained)
     ctx = NS(guild=guild, interaction=None, send=send, author=NS(id=1))
     asyncio.run(b.look.callback(ctx, f"https://discord.com/channels/{GUILD}/50/77"))
     fields = {f.name: f.value for f in sent[0].fields}
     assert "legs.png (image/png, 2 KB)" in fields["On the message"]
-    assert fields["Sent to the model"].startswith("1. downloaded")
+    assert fields["Pictures sent to the model"].startswith("1. downloaded")
     assert "short skirt" in next(v for k, v in fields.items() if k.startswith("What "))
-    assert "**4/10**" in fields["Judge's verdict (not saved)"] and "quote: [image]" in fields["Judge's verdict (not saved)"]
+    assert "**5/10**" in fields["Verdict (not saved)"] and "quote: [image]" in fields["Verdict (not saved)"]
+    assert fields["Why"] == "The picture crops a seiyuu's legs on stage."
+    assert fields["Score math"] == "horny 5 + real person +1 + bit -1 = 5"
     assert b.db.get_message(77) is None  # nothing saved

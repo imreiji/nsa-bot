@@ -307,3 +307,31 @@ def test_hard_distress_words_override_a_spiral_flag():
     assert out[3].severity > 0 and out[4].severity > 0  # oshi death jokes stay spirals
     from nsabot.judge import hard_distress
     assert not hard_distress("i already said i plan to spend my life alone") and not hard_distress("the weekend me")
+
+
+def test_score_math_explains_the_formula():
+    assert scoring.breakdown({"behaviours": ["unicorn"], "target": "real", "sincerity": "sincere"}) \
+        == "unicorn 6 + real person +1 + sincere +1 = 8"
+    spiral = {"behaviours": ["life_impact"], "target": "real", "intensity": "graphic", "sincerity": "sincere",
+              "spiral": True}
+    assert scoring.breakdown(spiral).endswith(f"= 10 → {scoring.SPIRAL_CAP} (oshi spiral cap)")
+    assert scoring.breakdown({"distress": True}) == "distress: always 0"
+    assert scoring.breakdown(None) == "no labels: not flagged"
+
+
+def test_explained_judging_returns_the_models_reasons():
+    import asyncio
+    from types import SimpleNamespace as NS
+    from nsabot.judge import EXPLAIN_NOTE, Judge
+    judge = Judge("key", "deepseek-flash", "http://localhost", DB(":memory:"))
+    sent = []
+
+    async def create(**kwargs):
+        sent.append(kwargs)
+        reply = {"flagged": [], "why": {"0": "Normal live report, rule (c)."}}
+        return NS(usage=None, choices=[NS(finish_reason="stop", message=NS(content=json.dumps(reply)))])
+
+    judge.client.chat.completions.create = create
+    verdicts, why = asyncio.run(judge.judge_explained({"messages": [{"i": 0, "text": "great live"}]}, 1))
+    assert verdicts == {} and why == {0: "Normal live report, rule (c)."}
+    assert sent[0]["messages"][-1]["content"] == EXPLAIN_NOTE

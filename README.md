@@ -30,7 +30,7 @@ commands are registered only in the servers in `NSA_GUILD_IDS` when the bot star
 | `/evaluate [limit]` | admin UIDs | Test the current prompt on the reviewed posts, report in DMs (nothing saved) |
 | `/notes [file]` | admin UIDs | Get the judge's server notes in DMs, or replace them with an attached file |
 | `/rescore [scope]` | admin UIDs | Re-judge posts scored under an older rubric, or with `scope:flagged` only the flagged ones (much cheaper). Re-runs DeepSeek; old history isn't re-posted |
-| `/look <message link>` | admin UIDs | Test picture judging on one message: which pictures the bot finds, whether they download, what the model says it sees, and the judge's verdict (nothing saved) |
+| `/look <message link>` | admin UIDs | Judge one message and explain it: which pictures the bot finds and whether they download, what the model sees in them, the verdict, the model's reasoning (including why it didn't flag something) and the score math (nothing saved) |
 | `/model` | anyone | Which model (Claude or DeepSeek) and settings the bot uses |
 | `/scoring` | anyone | The scoring formula, thresholds and calibration accuracy |
 | `/dossier [@user]` | everyone (`NSA_DOSSIER_PUBLIC`, 3/hour each; admins unlimited) | Deadpan classified report on their kimoi record |

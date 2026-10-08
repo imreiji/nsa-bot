@@ -1399,7 +1399,7 @@ def evaluation_embed(guild_id: int, r: dict) -> discord.Embed:
 MESSAGE_LINK = re.compile(r"channels/(\d+)/(\d+)/(\d+)")
 
 
-@bot.hybrid_command(help="Test picture judging on one message: what the bot finds, downloads, sees and scores.")
+@bot.hybrid_command(help="Judge one message and explain why: pictures it found and sees, verdict, reasoning, score math.")
 @app_commands.describe(message="The message's link (right-click or long-press it → Copy Message Link)")
 @deployer_only()
 async def look(ctx: commands.Context, message: str):
@@ -1426,34 +1426,38 @@ async def look(ctx: commands.Context, message: str):
         steps.append(f"{n}. " + (f"downloaded ({len(data) * 3 // 4 // 1024} KB)" if data else "**download failed**"))
         if data:
             pictures.append(data)
-    embed = discord.Embed(title="👁️ Picture check", url=msg.jump_url, color=0x5865F2)
+    embed = discord.Embed(title="👁️ Look", url=msg.jump_url, color=0x5865F2)
     embed.add_field(name="On the message", value=clip("\n".join(found) or "nothing attached", 1000), inline=False)
-    embed.add_field(name="Sent to the model",
-                    value=("\n".join(steps) or "no usable pictures (GIFs, stickers, video and files over 8 MB are skipped)")
+    embed.add_field(name="Pictures sent to the model",
+                    value=("\n".join(steps) or "none (GIFs, stickers, video and files over 8 MB are skipped)")
                     + ("" if IMAGES else "\n`NSA_IMAGES` is off"), inline=False)
-    if pictures:
-        try:
+    try:
+        if pictures:
             embed.add_field(name=f"What {judge.agent_model or judge.model} sees",
                             value=clip(await judge.describe_images(pictures) or "(no answer)", 1000), inline=False)
-            stored = db.get_message(message_id)
-            if stored:  # judge it the way a sweep would, with the conversation around it
-                timeline = (db.timeline(channel_id, message_id, message_id, before=CONTEXT_MESSAGES)
-                            + db.timeline_after(channel_id, message_id, AFTER_MESSAGES))
-            else:
-                timeline = [{"id": msg.id, "author_name": msg.author.display_name, "content": plain_text(msg),
-                             "reply_author": None, "reply_text": None, "extras": describe_extras(msg)}]
-            payload, order = build_payload(channel_info(ctx.guild, channel_id), timeline, [message_id])
-            result, _ = await judge.judge_with_quip(payload, len(order), quip=False, anchors=prompt_extras(ctx.guild.id),
-                                                    images=[(0, p) for p in pictures])
-            v = result.get(0, Verdict(0, None))
-            verdict = f"**{v.severity}/10**" + (f" · {scoring.describe(v.labels)}" if v.labels else "")
-            verdict += f"\n{v.reason}" if v.reason else ""
-            if v.labels and v.labels.get("evidence"):
-                verdict += f"\nquote: {v.labels['evidence']}"
-            embed.add_field(name="Judge's verdict (not saved)", value=clip(verdict, 1000), inline=False)
-        except Exception as e:
-            log.exception("/look failed")
-            embed.add_field(name="Model call failed", value=clip(f"{type(e).__name__}: {e}", 1000), inline=False)
+        stored = db.get_message(message_id)
+        if stored:  # judge it the way a sweep would, with the conversation around it
+            timeline = (db.timeline(channel_id, message_id, message_id, before=CONTEXT_MESSAGES)
+                        + db.timeline_after(channel_id, message_id, AFTER_MESSAGES))
+        else:
+            timeline = [{"id": msg.id, "author_name": msg.author.display_name, "content": plain_text(msg),
+                         "reply_author": None, "reply_text": None, "extras": describe_extras(msg)}]
+        payload, order = build_payload(channel_info(ctx.guild, channel_id), timeline, [message_id])
+        result, why = await judge.judge_explained(payload, len(order), anchors=prompt_extras(ctx.guild.id),
+                                                  images=[(0, p) for p in pictures])
+        v = result.get(0, Verdict(0, None))
+        verdict = f"**{v.severity}/10**" + (f" · {scoring.describe(v.labels)}" if v.labels else " · not flagged")
+        verdict += f"\n{v.reason}" if v.reason else ""
+        if v.labels and v.labels.get("evidence"):
+            verdict += f"\nquote: {v.labels['evidence']}"
+        embed.add_field(name="Verdict (not saved)", value=clip(verdict, 1000), inline=False)
+        embed.add_field(name="Why", value=clip(why.get(0) or "(the model gave no reason)", 1000), inline=False)
+        embed.add_field(name="Score math", value=clip(scoring.breakdown(v.labels), 1000), inline=False)
+        if not stored:
+            embed.set_footer(text="Not in the database yet, so judged without the conversation around it.")
+    except Exception as e:
+        log.exception("/look failed")
+        embed.add_field(name="Model call failed", value=clip(f"{type(e).__name__}: {e}", 1000), inline=False)
     await ctx.send(embed=embed, ephemeral=True)
 
 

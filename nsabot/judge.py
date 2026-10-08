@@ -280,6 +280,13 @@ people who posted. No slurs, nothing about appearance, race or gender, nothing s
 minors."""
 
 
+EXPLAIN_NOTE = """Admin review: also add a "why" object to your JSON, with an entry for EVERY message that
+has an "i", flagged or not: {"why": {"0": "...", "1": "..."}}. In one to three plain sentences, say
+how you decided: which step-1 rule cleared it (and why it applies), or what the words or picture
+show and why each label you chose fits (behaviour, target, intensity, sincerity, spiral, doubling
+down). Mention the context or server notes you relied on."""
+
+
 VAR_NOTE = """VAR review: the one message with an "i" was deleted by its author shortly after posting.
 Label it on its own merits using the context around it, including how people reacted after it.
 If it looks deleted because it was private rather than embarrassing (an address, phone number,
@@ -430,6 +437,14 @@ class Judge:
         anchors: calibration examples from this server, appended to the system prompt.
         images: (index, image URL or data: URL) for scored messages' pictures, sent after the batch.
         """
+        verdicts, raw = await self._judge_raw(payload, n, quip, note, anchors, images)
+        return verdicts, parse_quip(raw) if quip else None
+
+    async def _judge_raw(
+        self, payload: dict, n: int, quip: bool, note: str | None = None, anchors: str | None = None,
+        images: list[tuple[int, str]] | None = None,
+    ) -> tuple[dict[int, Verdict], str]:
+        """The judge call itself: verdicts plus the raw reply (judge_explained reads extra fields from it)."""
         images = images or []
         counts = Counter(i for i, _ in images)
         PARSE_STATS["images_sent"] += len(images)
@@ -469,7 +484,24 @@ class Judge:
         raw = resp.text
         texts = [m.get("text", "") for m in payload.get("messages", []) if "i" in m]
         verdicts = parse_verdicts(raw, n, texts if len(texts) == n else None, set(counts))
-        return verdicts, parse_quip(raw) if quip else None
+        return verdicts, raw
+
+    async def judge_explained(
+        self, payload: dict, n: int, anchors: str | None = None, images: list[tuple[int, str]] | None = None,
+    ) -> tuple[dict[int, Verdict], dict[int, str]]:
+        """A normal judge call that also asks for the reasoning behind each decision (for /look).
+        The explanation comes from the same call as the verdict, not a guess made afterwards."""
+        verdicts, raw = await self._judge_raw(payload, n, False, EXPLAIN_NOTE, anchors, images)
+        data = _load(raw) or {}
+        why = data.get("why") if isinstance(data, dict) else None
+        out: dict[int, str] = {}
+        if isinstance(why, dict):
+            for k, v in why.items():
+                try:
+                    out[int(k)] = str(v)[:600]
+                except (TypeError, ValueError):
+                    continue
+        return verdicts, out
 
     def _check_prompt_size(self, prompt_tokens: int) -> None:
         """Haiku 5.5 bills a prompt over 100k tokens at 5x the price. Judge batches are far smaller
