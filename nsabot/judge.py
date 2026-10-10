@@ -49,8 +49,7 @@ b) Pointing at someone else. Teasing, quoting, accusing, daring, scripting or as
    because she's with boys?", "say you gooned to the photobook", "start gooning during the call",
    "what if she has a bf" to wind up a friend about their oshi) is not kimoi from the poster. Only
    the person actually doing the kimoi thing gets flagged. Different: a poster putting their OWN
-   fantasy out there as a question ("would you let [seiyuu] kabedon you", "don't you wanna be her
-   dog") is theirs; label it.
+   fantasy out there as a question ("would you let [seiyuu] kabedon you") is theirs; label it.
 c) Normal fandom: having an oshi, calling yourself a Producer / LoveLiver, "she's cute", live
    reports, setlists, calls, penlights, crying at a final live, announcement hype, buying CDs,
    Blu-rays, merch and tickets at a normal level, gacha pulls, discussing episodes, songs, events,
@@ -64,11 +63,17 @@ e) Friend banter that isn't otaku behaviour: members roasting or digging into EA
    a member's alt account, "I know where you sleep", joke doxxing a member for a prank, "kill him"
    about some rude fan). That's the friend group, not stalking. But otaku behaviour aimed at a
    member still counts: asking how a friend's sweat or house smells is "bodily_servitude" with
-   target "fan", usually "bit". Members are listed in the server notes when they're available.
+   target "fan", usually "bit", and so are horny jokes aimed at a member ("pull out your [pun on
+   a body part]", "how do i recover from sexually harassing [member]"): "horny", target "fan",
+   "bit". Members are listed in the server notes when they're available.
 f) Racial, ethnic or nationality remarks. Not kimoi; never put them on someone's record.
 g) Things that aren't the poster's own words or behaviour: quotes, copypasta, song lyrics,
    translations of a seiyuu's posts, shared official art, a link (link-fixer domains such as
    cunnyx.com or fxtwitter mean nothing), a bare emote or sticker. For pictures, see IMAGES.
+   One exception: a reaction gif (tenor.com, giphy.com) is the poster's own reaction, and its
+   address names what it shows. A ".../nose-fur-kawaii-sniff-canine-gif" posted right after a
+   seiyuu's feet came up is the poster sniffing: judge it like a line of text, quoting the words
+   in the address as evidence.
 
 STEP 2. Evidence. For anything left, copy the exact words FROM THIS MESSAGE'S OWN "text" that show
 the kimoi behaviour (max 15 words, copied character for character, no paraphrase, not from other
@@ -251,7 +256,7 @@ In testing your labels were right but your scores ran about a point low, almost 
   thought is: "Ceiling too" after "cover my walls with her magazines", "THE LONG SKIRT" while
   gushing about a seiyuu's legs, "My sleep schedule is synced to [seiyuu]'s posts" (life_impact).
 
-Six kinds of real kimoi you tended to miss:
+Kinds of real kimoi you tended to miss:
 - Oshi death jokes are spirals, not distress, here. "if [seiyuu] told me to shoot myself", "I lost
   my life's purpose" after oshi news, "there is no point in drinking" mid-spiral, "turning my
   existence into void" over her: ["life_impact"], "spiral": true, usually "bit". Distress is for
@@ -280,6 +285,16 @@ Six kinds of real kimoi you tended to miss:
   -> ["bodily_servitude", "worship"], "real", usually "bit", and each line of the riff is flagged.
 - A poster's own fantasy asked as a question is theirs: "would you let [seiyuu] kabedon you and call
   you her little pogchamp" is gachikoi or horny from the poster, not pointing at someone else.
+- Oshi-as-god sermons: once someone starts preaching about a seiyuu or her unit as holy ("[seiyuu]
+  is a miracle on this earth", "her holiness is godliness"), every line of the sermon is
+  ["worship"], usually "bit", including the ones that only talk about god, saints, sin, satan or
+  resurrection without naming her, and a pasted article about sainthood dropped into it.
+- Egging a friend on to spend on the fandom is the poster's own spending talk: "just gamble
+  harder" / "then you arent buying enough" about serial codes or gacha, "work and give more
+  money" or "she can have all the money she wants" about a seiyuu -> ["spending"].
+- Short reactions that keep a kimoi thread going are kimoi: "which cheeks" right after someone
+  gushes about a seiyuu's cheeks is "horny"; "RIAJUU EXPLODE" while raging over whether an oshi
+  is seeing someone is "unicorn"; "God i wish [seiyuu] would look at me" is "gachikoi".
 
 One never-flag case you got wrong: members hunting down another MEMBER's alt account is friend
 banter (rule e), even when the account is named after the idols it follows. After "what name did
